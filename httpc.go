@@ -33,7 +33,7 @@ var (
 const (
 	defaultBufferSize            = 32 << 10 // 32KB
 	defaultMaxBufferPool         = 100
-	defaultUserAgent             = "Touka HTTP Client"
+	defaultUserAgent             = "Touka HTTP Client/v0 (Toka HTTPC)"
 	defaultMaxIdleConns          = 128
 	defaultIdleConnTimeout       = 90 * time.Second
 	defaultDialTimeout           = 10 * time.Second
@@ -48,7 +48,6 @@ var bufferPool = sync.Pool{
 	},
 }
 
-var errInvalidWrite = errors.New("invalid write result")
 var ErrShortWrite = errors.New("short write")
 var EOF = io.EOF
 
@@ -308,21 +307,6 @@ type ProtocolsConfig struct {
 	Http2           bool // 是否启用 HTTP/2
 	Http2_Cleartext bool // 是否启用 H2C
 	ForceH2C        bool // 是否强制启用 H2C
-}
-
-var (
-	enableH1  bool
-	enableH2  bool
-	enableH2C bool
-	forceH2C  bool
-)
-
-// SetProtolcols 预先配置全局协议版本设置 (使用结构体参数)
-func SetProtolcols(config ProtocolsConfig) {
-	enableH1 = config.Http1
-	enableH2 = config.Http2
-	enableH2C = config.Http2_Cleartext
-	forceH2C = config.ForceH2C
 }
 
 // New 创建客户端实例
@@ -848,7 +832,6 @@ func getTransportDetails(transport http.RoundTripper) string {
   WriteBufferSize      : %d
   ReadBufferSize       : %d
   Protocol             : %v
-  H2C                  : %v
 `,
 			t.MaxIdleConns,
 			t.MaxIdleConnsPerHost,
@@ -859,7 +842,6 @@ func getTransportDetails(transport http.RoundTripper) string {
 			t.WriteBufferSize,
 			t.ReadBufferSize,
 			t.Protocols,
-			enableH2C,
 		)
 	}
 

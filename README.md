@@ -26,7 +26,7 @@
 ## 📦 安装
 
 ```bash
-go get github.com/satomitouka/touka-httpc
+go get github.com/WJQSERVER-STUDIO/httpc
 ```
 
 ## 🚀 快速开始
@@ -40,7 +40,7 @@ import (
 	"log"
 	"time"
 
-	httpc "github.com/satomitouka/touka-httpc" 
+	"github.com/WJQSERVER-STUDIO/httpc" 
 )
 
 type User struct {
