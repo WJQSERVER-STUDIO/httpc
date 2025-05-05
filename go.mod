@@ -1,6 +1,6 @@
 module github.com/WJQSERVER-STUDIO/httpc
 
-go 1.24.1
+go 1.24.2
 
 require github.com/valyala/bytebufferpool v1.0.0 // indirect
 
