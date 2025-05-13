@@ -863,14 +863,24 @@ func formatHeaders(headers http.Header) string {
 
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	var (
-		resp *http.Response
-		err  error
+		resp    *http.Response
+		err     error
+		lastErr error
 	)
 
 	for attempt := 0; attempt <= c.retryOpts.MaxAttempts; attempt++ {
-		resp, err = c.client.Do(req) // 注意这里调用的是 http.Client.Do
 
-		if c.shouldRetry(resp, err) {
+		// 检查ctx状态
+		select {
+		case <-req.Context().Done():
+			return nil, c.wrapError(req.Context().Err())
+		default:
+		}
+
+		resp, err = c.client.Do(req) // 注意这里调用的是 http.Client.Do
+		lastErr = err
+
+		if c.shouldRetry(resp, lastErr) {
 			if attempt < c.retryOpts.MaxAttempts {
 				var delay time.Duration
 				if resp != nil && resp.StatusCode == 429 {
@@ -878,16 +888,30 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 				} else {
 					delay = c.calculateExponentialBackoff(attempt, c.retryOpts.Jitter) // 传递 Jitter 参数
 				}
-				time.Sleep(delay)
-				continue
+
+				if resp != nil && resp.Body != nil {
+					_, _ = copyb.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
+					resp = nil
+				}
+
+				// 重试前检查ctx
+				select {
+				case <-req.Context().Done():
+					return nil, c.wrapError(req.Context().Err())
+				case <-time.After(delay):
+					continue
+				}
+			} else {
+				return resp, ErrMaxRetriesExceeded
 			}
-			return nil, ErrMaxRetriesExceeded
+		} else {
+			break
 		}
-		break
 	}
 
-	if err != nil {
-		return nil, c.wrapError(err)
+	if lastErr != nil {
+		return resp, c.wrapError(lastErr)
 	}
 
 	return resp, nil
