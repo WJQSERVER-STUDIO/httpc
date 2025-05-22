@@ -852,7 +852,7 @@ func getTransportDetails(transport http.RoundTripper) string {
 	return "  Type                 : nil"
 }
 
-// 格式化请求头为多行字符串 (保持原函数不变)
+// 格式化请求头为多行字符串
 func formatHeaders(headers http.Header) string {
 	var builder strings.Builder
 	for key, values := range headers {
