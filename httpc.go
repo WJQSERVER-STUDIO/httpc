@@ -33,7 +33,7 @@ var (
 const (
 	defaultBufferSize            = 32 << 10 // 32KB
 	defaultMaxBufferPool         = 100
-	defaultUserAgent             = "Touka HTTP Client/v0 (Toka HTTPC)"
+	defaultUserAgent             = "Touka HTTP Client/v0"
 	defaultMaxIdleConns          = 128
 	defaultIdleConnTimeout       = 90 * time.Second
 	defaultDialTimeout           = 10 * time.Second
