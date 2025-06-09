@@ -33,7 +33,7 @@ var (
 const (
 	defaultBufferSize            = 32 << 10 // 32KB
 	defaultMaxBufferPool         = 100
-	defaultUserAgent             = "Touka HTTP Client/v0 (Toka HTTPC)"
+	defaultUserAgent             = "Touka HTTP Client/v0"
 	defaultMaxIdleConns          = 128
 	defaultIdleConnTimeout       = 90 * time.Second
 	defaultDialTimeout           = 10 * time.Second
@@ -41,6 +41,18 @@ const (
 	defaultTLSHandshakeTimeout   = 10 * time.Second
 	defaultExpectContinueTimeout = 1 * time.Second
 )
+
+// RoundTripperFunc 是一个适配器，允许使用普通函数作为 HTTP RoundTripper。
+type RoundTripperFunc func(req *http.Request) (*http.Response, error)
+
+// RoundTrip 实现了 http.RoundTripper 接口。
+func (f RoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// MiddlewareFunc 是客户端中间件的类型。
+// 它接收一个 http.RoundTripper (代表下一个处理器) 并返回一个新的 http.RoundTripper。
+type MiddlewareFunc func(next http.RoundTripper) http.RoundTripper
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
@@ -565,224 +577,223 @@ func (rb *RequestBuilder) SetGOBBody(body interface{}) (*RequestBuilder, error) 
 
 // Build 构建 http.Request
 func (rb *RequestBuilder) Build() (*http.Request, error) {
-	// 构建带 Query 参数的 URL
+	/*
+		// 构建带 Query 参数的 URL
+		reqURL, err := url.Parse(rb.url)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s, error: %v", ErrInvalidURL, rb.url, err)
+		}
+		if len(rb.query) > 0 {
+			query := reqURL.Query()
+			for k, v := range rb.query {
+				for _, val := range v {
+					query.Add(k, val)
+				}
+			}
+			reqURL.RawQuery = query.Encode()
+		}
+
+		req, err := http.NewRequestWithContext(rb.context, rb.method, reqURL.String(), rb.body)
+		if err != nil {
+			return nil, err
+		}
+
+		// 合并 Header，RequestBuilder 中的 Header 优先级更高
+		req.Header = rb.header
+
+		// 若没有设置 NoDefaultHeaders，则添加默认 UA Header
+		if !rb.noDefaultHeaders {
+			req.Header.Set("User-Agent", rb.client.userAgent) // 确保 User-Agent 被设置
+		}
+		return req, nil
+	*/
+
 	reqURL, err := url.Parse(rb.url)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s, error: %v", ErrInvalidURL, rb.url, err)
 	}
 	if len(rb.query) > 0 {
-		query := reqURL.Query()
+		q := reqURL.Query()
 		for k, v := range rb.query {
 			for _, val := range v {
-				query.Add(k, val)
+				q.Add(k, val)
 			}
 		}
-		reqURL.RawQuery = query.Encode()
+		reqURL.RawQuery = q.Encode()
 	}
-
 	req, err := http.NewRequestWithContext(rb.context, rb.method, reqURL.String(), rb.body)
 	if err != nil {
 		return nil, err
 	}
-
-	// 合并 Header，RequestBuilder 中的 Header 优先级更高
-	req.Header = rb.header
-
-	// 若没有设置 NoDefaultHeaders，则添加默认 UA Header
-	if !rb.noDefaultHeaders {
-		req.Header.Set("User-Agent", rb.client.userAgent) // 确保 User-Agent 被设置
+	for k, v := range rb.header {
+		req.Header[k] = v
+	}
+	if !rb.noDefaultHeaders && req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", rb.client.userAgent)
 	}
 	return req, nil
 }
 
 // Execute 执行请求并返回 http.Response
 func (rb *RequestBuilder) Execute() (*http.Response, error) {
+	/*
+		req, err := rb.Build()
+		if err != nil {
+			return nil, err
+		}
+
+		// 应用中间件
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp, err := rb.client.Do(r) // 调用 Client.Do 执行请求
+			rb.responseWrapper(w, resp, err)
+		})
+
+		// 构建中间件链
+		middlewareHandler := applyMiddlewares(handler, rb.client.middlewares...)
+
+		// 创建 ResponseWriter 和 Request，并调用中间件链
+		rw := newResponseWriter()
+		middlewareHandler.ServeHTTP(rw, req)
+
+		return rw.getResponse(), rw.getError()
+	*/
 	req, err := rb.Build()
 	if err != nil {
 		return nil, err
 	}
-
-	// 应用中间件
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp, err := rb.client.Do(r) // 调用 Client.Do 执行请求
-		rb.responseWrapper(w, resp, err)
-	})
-
-	// 构建中间件链
-	middlewareHandler := applyMiddlewares(handler, rb.client.middlewares...)
-
-	// 创建 ResponseWriter 和 Request，并调用中间件链
-	rw := newResponseWriter()
-	middlewareHandler.ServeHTTP(rw, req)
-
-	return rw.getResponse(), rw.getError()
+	return rb.client.Do(req)
 }
 
-// responseWrapper 用于包装 Client.Do 的响应和错误
-func (rb *RequestBuilder) responseWrapper(w http.ResponseWriter, resp *http.Response, err error) {
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError) // 或者其他适当的错误状态码
-		w.Write([]byte(err.Error()))                  // 将错误信息写入 ResponseWriter
-		return
-	}
-	// 将 Client.Do 返回的响应复制到 ResponseWriter
-	copyResponse(w, resp)
-}
-
-// copyResponse 将 http.Response 复制到 http.ResponseWriter
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
-	if resp == nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	// 复制 Header
-	header := w.Header()
-	for key, values := range resp.Header {
-		for _, value := range values {
-			header.Add(key, value)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-
-	// 复制 Body
-	if _, err := copyb.Copy(w, resp.Body); err != nil {
-		// 复制 Body 失败，记录日志或处理错误
-		fmt.Printf("Error copying response body: %v\n", err)
-	}
-}
-
-// ResponseWriter 包装 http.ResponseWriter 和错误信息
-type ResponseWriter struct {
-	http.ResponseWriter
-	response    *http.Response
-	err         error
-	wroteHeader bool
-	buffer      *bytes.Buffer
-}
-
-// newResponseWriter 创建 ResponseWriter 实例
-func newResponseWriter() *ResponseWriter {
-	return &ResponseWriter{
-		ResponseWriter: &noopResponseWriter{}, // 使用 noopResponseWriter 作为默认值
-		buffer:         bytes.NewBuffer(nil),  // 初始化 buffer
-	}
-}
-
-// Header 实现 http.ResponseWriter 接口的 Header 方法
-func (rw *ResponseWriter) Header() http.Header {
-	if rw.response != nil {
-		return rw.response.Header
-	}
-	return make(http.Header) // 如果 response 为 nil，返回一个新的 Header
-}
-
-// WriteHeader 实现 http.ResponseWriter 接口的 WriteHeader 方法
-func (rw *ResponseWriter) WriteHeader(statusCode int) {
-	if rw.wroteHeader {
-		return // 防止多次调用 WriteHeader
-	}
-
-	rw.wroteHeader = true // 标记 header 已写入
-
-	if rw.response == nil {
-		rw.response = &http.Response{
-			Header:     make(http.Header),
-			StatusCode: statusCode,
-		}
-	} else {
-		rw.response.StatusCode = statusCode
-	}
-}
-
-// Write 实现 http.ResponseWriter 接口的 Write 方法
-func (rw *ResponseWriter) Write(p []byte) (int, error) {
-	// 如果 response 为 nil，则初始化 response
-	if rw.response == nil {
-		rw.response = &http.Response{
-			Header: make(http.Header),
-		}
-	}
-
-	// 如果没有调用 WriteHeader，则默认写入 200 OK
-	if !rw.wroteHeader {
-		rw.WriteHeader(http.StatusOK)
-	}
-
-	// 将数据写入 buffer
-	n, err := rw.buffer.Write(p)
-	return n, err
-}
-
-// getResponse 获取 http.Response
-func (rw *ResponseWriter) getResponse() *http.Response {
-	if rw.response != nil && rw.buffer.Len() > 0 {
-		// 在获取 Response 时，将 buffer 中的数据设置为 Body
-		rw.response.Body = io.NopCloser(bytes.NewReader(rw.buffer.Bytes()))
-	}
-	return rw.response
-}
-
-// 实现 http.Flusher 接口
-// Flusher interface implementation (optional)
-type flusher interface {
-	Flush()
-}
-
-func (rw *ResponseWriter) Flush() {
-	if f, ok := rw.ResponseWriter.(flusher); ok {
-		f.Flush()
-	}
-}
-
-// noopResponseWriter 实现 http.ResponseWriter 接口，但不执行任何操作
-type noopResponseWriter struct {
-	header http.Header
-}
-
-func (w *noopResponseWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = make(http.Header)
-	}
-	return w.header
-}
-
-func (w *noopResponseWriter) WriteHeader(statusCode int) {}
-
-func (w *noopResponseWriter) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
-// getError 获取错误信息
-func (rw *ResponseWriter) getError() error {
-	return rw.err
-}
-
-// MiddlewareFunc 定义中间件函数类型
-type MiddlewareFunc func(next http.Handler) http.Handler
-
-// ApplyMiddlewares 应用中间件链
-func applyMiddlewares(handler http.Handler, middlewares ...MiddlewareFunc) http.Handler {
-	for i := range middlewares {
-		handler = middlewares[len(middlewares)-1-i](handler) // 逆序应用中间件
-	}
-	return handler
-}
-
-// 实现标准库兼容接口 (保持原函数不变，但使用 RequestBuilder 重构)
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	if req.ProtoMajor == 2 {
-		if req.Header.Get("Connection") == "Upgrade" && req.Header.Get("Upgrade") != "" {
-			req.Header.Del("Connection")
-			req.Header.Del("Upgrade")
+	/*
+		if req.ProtoMajor == 2 {
+			if req.Header.Get("Connection") == "Upgrade" && req.Header.Get("Upgrade") != "" {
+				req.Header.Del("Connection")
+				req.Header.Del("Upgrade")
+			}
 		}
+
+		// 记录日志
+		c.logRequest(req)
+
+		// 执行中间件链和重试逻辑
+		return c.doWithRetry(req)
+	*/
+	var finalRT http.RoundTripper = c.transport
+
+	// 逆序应用，使得第一个中间件在最外层
+	for i := len(c.middlewares) - 1; i >= 0; i-- {
+		finalRT = c.middlewares[i](finalRT)
 	}
 
-	// 记录日志
-	c.logRequest(req)
+	if c.dumpLog != nil {
+		finalRT = c.logRoundTripper(finalRT)
+	}
 
-	// 执行中间件链和重试逻辑
-	return c.doWithRetry(req)
+	// 只有在配置了重试次数时才应用
+	if c.retryOpts.MaxAttempts > 0 {
+		finalRT = c.retryRoundTripper(finalRT)
+	}
+
+	return finalRT.RoundTrip(req)
+}
+
+// logRoundTripper 是一个内部中间件，用于在请求发送前记录日志。
+func (c *Client) logRoundTripper(next http.RoundTripper) http.RoundTripper {
+	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		c.logRequest(req) // 在请求发送前记录
+		return next.RoundTrip(req)
+	})
+}
+
+// retryRoundTripper 是一个内部中间件，用于实现请求的重试逻辑。
+func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
+	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var bodyReaderFunc func() (io.ReadCloser, error) // 用于缓存和重置 Body
+
+		// 如果请求已经有 GetBody，我们直接使用它。
+		if req.GetBody != nil {
+			bodyReaderFunc = req.GetBody
+		}
+
+		var lastResp *http.Response
+		var lastErr error
+
+		for attempt := 0; attempt <= c.retryOpts.MaxAttempts; attempt++ {
+
+			if attempt > 0 {
+				if bodyReaderFunc == nil {
+					// 如果没有 bodyReaderFunc，意味着原始 Body 不可重读，
+					// 且已在第一次尝试中被消耗，所以无法重试带 Body 的请求。
+					// 在这种情况下，我们应该在第一次失败后立即停止。
+					// shouldRetry 逻辑应该考虑到这一点。
+					// 这里我们直接中断重试。
+					break
+				}
+
+				// 从 bodyReaderFunc 创建一个新的 Body
+				newBody, err := bodyReaderFunc()
+				if err != nil {
+					if lastResp != nil {
+						lastResp.Body.Close()
+					}
+					return nil, fmt.Errorf("httpc: failed to get request body for retry attempt %d: %w", attempt, err) // 英文错误
+				}
+				req.Body = newBody
+			}
+
+			// 检查上下文是否已取消
+			select {
+			case <-req.Context().Done():
+				// 如果之前的响应体已关闭，则返回上下文错误
+				if lastResp != nil {
+					lastResp.Body.Close()
+				}
+				return nil, c.wrapError(req.Context().Err())
+			default:
+			}
+
+			// 调用链中的下一个 RoundTripper (可能是日志、Padding或其他中间件)
+			resp, err := next.RoundTrip(req)
+			lastResp, lastErr = resp, err
+
+			// 判断是否需要重试
+			if !c.shouldRetry(resp, err) {
+				break // 不需要重试，跳出循环
+			}
+
+			// 如果是最后一次尝试，则不再重试，直接返回结果
+			if attempt >= c.retryOpts.MaxAttempts {
+				lastErr = ErrMaxRetriesExceeded
+				break
+			}
+
+			// 计算重试延迟
+			delay := c.calculateRetryAfter(resp)
+			if delay <= 0 {
+				delay = c.calculateExponentialBackoff(attempt, c.retryOpts.Jitter)
+			}
+
+			// 在重试前，确保关闭当前失败的响应体以复用连接
+			if resp != nil && resp.Body != nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+
+			// 等待延迟，同时监听上下文取消
+			select {
+			case <-req.Context().Done():
+				return nil, c.wrapError(req.Context().Err())
+			case <-time.After(delay):
+				// 继续下一次循环
+			}
+		}
+
+		if lastErr != nil {
+			return lastResp, c.wrapError(lastErr)
+		}
+		return lastResp, nil
+	})
 }
 
 // 记录请求日志 (保持原函数不变)
@@ -852,7 +863,7 @@ func getTransportDetails(transport http.RoundTripper) string {
 	return "  Type                 : nil"
 }
 
-// 格式化请求头为多行字符串 (保持原函数不变)
+// 格式化请求头为多行字符串
 func formatHeaders(headers http.Header) string {
 	var builder strings.Builder
 	for key, values := range headers {
