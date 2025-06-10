@@ -459,4 +459,4 @@ client = httpc.New(
 
 ## 📄 许可证
 
-本项目使用 WJQserver Studio License 2.0 授权许可, 所有权利由 satomitouka完全保留, WJQserver Studio可代行权利
+本项目使用 WJQserver Studio License 2.0 和 Mozilla Public License 2.0 双重授权许可, 您可以从两个许可证里选择一个, 所有权利由 satomitouka完全保留, WJQserver Studio可代行权利
