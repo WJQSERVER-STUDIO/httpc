@@ -215,9 +215,15 @@ func WithDNSResolver(servers []string, timeout time.Duration) Option {
 			timeout = defaultResolverTimeout
 		}
 		// 调用 resolver.go 中的函数创建自定义解析器
-		resolver := newCustomResolver(servers, timeout)
+		dialer := &customDialer{
+			defaultDialer: c.dialer, // 传入原始的拨号器用于回退和实际连接
+			dnsServers:    servers,  // 设置DNS服务器列表
+			dnsTimeout:    timeout,  // 设置DNS查询超时
+		}
 		// 将自定义解析器附加到客户端的拨号器(dialer)上
-		c.dialer.Resolver = resolver
+		//c.dialer.Resolver = resolver
+
+		c.transport.DialContext = dialer.DialContext
 	}
 
 }
