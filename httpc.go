@@ -40,18 +40,19 @@ const (
 	defaultKeepAliveTimeout      = 30 * time.Second
 	defaultTLSHandshakeTimeout   = 10 * time.Second
 	defaultExpectContinueTimeout = 1 * time.Second
+	defaultResolverTimeout       = 5 * time.Second
 )
 
-// RoundTripperFunc 是一个适配器，允许使用普通函数作为 HTTP RoundTripper。
+// RoundTripperFunc 是一个适配器，允许使用普通函数作为 HTTP RoundTripper
 type RoundTripperFunc func(req *http.Request) (*http.Response, error)
 
-// RoundTrip 实现了 http.RoundTripper 接口。
+// RoundTrip 实现了 http.RoundTripper 接口
 func (f RoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// MiddlewareFunc 是客户端中间件的类型。
-// 它接收一个 http.RoundTripper (代表下一个处理器) 并返回一个新的 http.RoundTripper。
+// MiddlewareFunc 是客户端中间件的类型
+// 它接收一个 http.RoundTripper (代表下一个处理器) 并返回一个新的 http.RoundTripper
 type MiddlewareFunc func(next http.RoundTripper) http.RoundTripper
 
 var bufferPool = sync.Pool{
@@ -201,6 +202,32 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithDNSResolver 设置自定义DNS解析器
+// servers: 一个或多个DNS服务器地址, 格式为 "ip:port" (例如, "8.8.8.8:53")
+// timeout: DNS查询的超时时间如果为0, 将使用默认超时 (5秒)
+// 此选项会覆盖系统默认的DNS解析行为
+func WithDNSResolver(servers []string, timeout time.Duration) Option {
+	return func(c *Client) {
+		if len(servers) == 0 {
+			return // 如果未提供服务器, 则不进行任何操作
+		}
+		if timeout == 0 {
+			timeout = defaultResolverTimeout
+		}
+		// 调用 resolver.go 中的函数创建自定义解析器
+		dialer := &customDialer{
+			defaultDialer: c.dialer, // 传入原始的拨号器用于回退和实际连接
+			dnsServers:    servers,  // 设置DNS服务器列表
+			dnsTimeout:    timeout,  // 设置DNS查询超时
+		}
+		// 将自定义解析器附加到客户端的拨号器(dialer)上
+		//c.dialer.Resolver = resolver
+
+		c.transport.DialContext = dialer.DialContext
+	}
+
+}
+
 // mergeTransport 将 src 的非零字段合并到 dst 中 (保持原函数不变)
 func mergeTransport(dst, src *http.Transport) {
 	dstVal := reflect.ValueOf(dst).Elem()
@@ -283,9 +310,9 @@ func WithProtocols(config ProtocolsConfig) Option {
 		// 直接修改当前 Client 实例的 transport 的 Protocols 字段
 		if c.transport == nil {
 			// 如果 transport 还未初始化 (理论上 New 函数会先初始化)，
-			// 可以在 Client 结构体中暂存配置，待 transport 初始化后再应用。
-			// 但更好的方式是确保 transport 在应用此 Option 前已初始化。
-			// 这里假设 transport 已存在。
+			// 可以在 Client 结构体中暂存配置，待 transport 初始化后再应用
+			// 但更好的方式是确保 transport 在应用此 Option 前已初始化
+			// 这里假设 transport 已存在
 			c.transport = &http.Transport{}
 			c.client.Transport = c.transport
 
@@ -698,7 +725,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return finalRT.RoundTrip(req)
 }
 
-// logRoundTripper 是一个内部中间件，用于在请求发送前记录日志。
+// logRoundTripper 是一个内部中间件，用于在请求发送前记录日志
 func (c *Client) logRoundTripper(next http.RoundTripper) http.RoundTripper {
 	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		c.logRequest(req) // 在请求发送前记录
@@ -706,12 +733,12 @@ func (c *Client) logRoundTripper(next http.RoundTripper) http.RoundTripper {
 	})
 }
 
-// retryRoundTripper 是一个内部中间件，用于实现请求的重试逻辑。
+// retryRoundTripper 是一个内部中间件，用于实现请求的重试逻辑
 func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		var bodyReaderFunc func() (io.ReadCloser, error) // 用于缓存和重置 Body
 
-		// 如果请求已经有 GetBody，我们直接使用它。
+		// 如果请求已经有 GetBody，我们直接使用它
 		if req.GetBody != nil {
 			bodyReaderFunc = req.GetBody
 		}
@@ -724,10 +751,10 @@ func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 			if attempt > 0 {
 				if bodyReaderFunc == nil {
 					// 如果没有 bodyReaderFunc，意味着原始 Body 不可重读，
-					// 且已在第一次尝试中被消耗，所以无法重试带 Body 的请求。
-					// 在这种情况下，我们应该在第一次失败后立即停止。
-					// shouldRetry 逻辑应该考虑到这一点。
-					// 这里我们直接中断重试。
+					// 且已在第一次尝试中被消耗，所以无法重试带 Body 的请求
+					// 在这种情况下，我们应该在第一次失败后立即停止
+					// shouldRetry 逻辑应该考虑到这一点
+					// 这里我们直接中断重试
 					break
 				}
 
