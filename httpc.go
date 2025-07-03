@@ -957,6 +957,9 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 // 解析 Retry-After 头部，仅在状态码为 429 时调用 (保持原函数不变)
 func (c *Client) calculateRetryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
 	retryAfter := resp.Header.Get("Retry-After")
 	if retryAfter != "" {
 		if delay, err := parseRetryAfter(retryAfter); err == nil {
