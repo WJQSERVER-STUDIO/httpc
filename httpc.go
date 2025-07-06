@@ -573,25 +573,17 @@ func (rb *RequestBuilder) SetBody(body io.Reader) *RequestBuilder {
 
 // SetJSONBody 设置 JSON Body
 func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error) {
-	/*
-		buf := rb.client.bufferPool.Get()
-		defer rb.client.bufferPool.Put(buf)
-
-		if err := json.NewEncoder(buf).Encode(body); err != nil {
-			return nil, fmt.Errorf("encode json body error: %w", err)
-		}
-		rb.body = bytes.NewReader(buf.Bytes())
-		rb.header.Set("Content-Type", "application/json")
-		return rb, nil
-	*/
 	pr, pw := io.Pipe()
 	rb.body = pr
+	rb.header.Set("Content-Type", "application/json")
 
 	go func() {
-		defer pw.Close()
-		if err := json.MarshalWrite(pw, body); err != nil {
+		var err error
+		defer func() {
 			pw.CloseWithError(err)
-		}
+		}()
+
+		err = json.MarshalWrite(pw, body)
 	}()
 	return rb, nil
 }
