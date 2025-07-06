@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -14,9 +13,12 @@ import (
 	"net/url"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
 )
@@ -27,6 +29,7 @@ var (
 	ErrMaxRetriesExceeded = errors.New("httpc: max retries exceeded")
 	ErrDecodeResponse     = errors.New("httpc: failed to decode response body")
 	ErrInvalidURL         = errors.New("httpc: invalid URL")
+	ErrNoResponse         = errors.New("httpc: no response")
 )
 
 // 默认配置常量
@@ -56,8 +59,14 @@ func (f RoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 type MiddlewareFunc func(next http.RoundTripper) http.RoundTripper
 
 var bufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return bytes.NewBuffer(make([]byte, 0, defaultBufferSize))
+	},
+}
+
+var stringsBuilderPool = sync.Pool{
+	New: func() any {
+		return &strings.Builder{}
 	},
 }
 
@@ -564,14 +573,26 @@ func (rb *RequestBuilder) SetBody(body io.Reader) *RequestBuilder {
 
 // SetJSONBody 设置 JSON Body
 func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error) {
-	buf := rb.client.bufferPool.Get()
-	defer rb.client.bufferPool.Put(buf)
+	/*
+		buf := rb.client.bufferPool.Get()
+		defer rb.client.bufferPool.Put(buf)
 
-	if err := json.NewEncoder(buf).Encode(body); err != nil {
-		return nil, fmt.Errorf("encode json body error: %w", err)
-	}
-	rb.body = bytes.NewReader(buf.Bytes())
-	rb.header.Set("Content-Type", "application/json")
+		if err := json.NewEncoder(buf).Encode(body); err != nil {
+			return nil, fmt.Errorf("encode json body error: %w", err)
+		}
+		rb.body = bytes.NewReader(buf.Bytes())
+		rb.header.Set("Content-Type", "application/json")
+		return rb, nil
+	*/
+	pr, pw := io.Pipe()
+	rb.body = pr
+
+	go func() {
+		defer pw.Close()
+		if err := json.MarshalWrite(pw, body); err != nil {
+			pw.CloseWithError(err)
+		}
+	}()
 	return rb, nil
 }
 
@@ -604,36 +625,6 @@ func (rb *RequestBuilder) SetGOBBody(body interface{}) (*RequestBuilder, error) 
 
 // Build 构建 http.Request
 func (rb *RequestBuilder) Build() (*http.Request, error) {
-	/*
-		// 构建带 Query 参数的 URL
-		reqURL, err := url.Parse(rb.url)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %s, error: %v", ErrInvalidURL, rb.url, err)
-		}
-		if len(rb.query) > 0 {
-			query := reqURL.Query()
-			for k, v := range rb.query {
-				for _, val := range v {
-					query.Add(k, val)
-				}
-			}
-			reqURL.RawQuery = query.Encode()
-		}
-
-		req, err := http.NewRequestWithContext(rb.context, rb.method, reqURL.String(), rb.body)
-		if err != nil {
-			return nil, err
-		}
-
-		// 合并 Header，RequestBuilder 中的 Header 优先级更高
-		req.Header = rb.header
-
-		// 若没有设置 NoDefaultHeaders，则添加默认 UA Header
-		if !rb.noDefaultHeaders {
-			req.Header.Set("User-Agent", rb.client.userAgent) // 确保 User-Agent 被设置
-		}
-		return req, nil
-	*/
 
 	reqURL, err := url.Parse(rb.url)
 	if err != nil {
@@ -663,27 +654,6 @@ func (rb *RequestBuilder) Build() (*http.Request, error) {
 
 // Execute 执行请求并返回 http.Response
 func (rb *RequestBuilder) Execute() (*http.Response, error) {
-	/*
-		req, err := rb.Build()
-		if err != nil {
-			return nil, err
-		}
-
-		// 应用中间件
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			resp, err := rb.client.Do(r) // 调用 Client.Do 执行请求
-			rb.responseWrapper(w, resp, err)
-		})
-
-		// 构建中间件链
-		middlewareHandler := applyMiddlewares(handler, rb.client.middlewares...)
-
-		// 创建 ResponseWriter 和 Request，并调用中间件链
-		rw := newResponseWriter()
-		middlewareHandler.ServeHTTP(rw, req)
-
-		return rw.getResponse(), rw.getError()
-	*/
 	req, err := rb.Build()
 	if err != nil {
 		return nil, err
@@ -692,20 +662,6 @@ func (rb *RequestBuilder) Execute() (*http.Response, error) {
 }
 
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	/*
-		if req.ProtoMajor == 2 {
-			if req.Header.Get("Connection") == "Upgrade" && req.Header.Get("Upgrade") != "" {
-				req.Header.Del("Connection")
-				req.Header.Del("Upgrade")
-			}
-		}
-
-		// 记录日志
-		c.logRequest(req)
-
-		// 执行中间件链和重试逻辑
-		return c.doWithRetry(req)
-	*/
 	var finalRT http.RoundTripper = c.transport
 
 	// 逆序应用，使得第一个中间件在最外层
@@ -803,7 +759,7 @@ func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 
 			// 在重试前，确保关闭当前失败的响应体以复用连接
 			if resp != nil && resp.Body != nil {
-				io.Copy(io.Discard, resp.Body)
+				copyb.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 			}
 
@@ -823,136 +779,94 @@ func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 	})
 }
 
-// 记录请求日志 (保持原函数不变)
+// 记录请求日志, 使用 strings.Builder 和 sync.Pool 优化性能
 func (c *Client) logRequest(req *http.Request) {
 	if c.dumpLog == nil {
 		return
 	}
 
-	transportDetails := getTransportDetails(c.transport)
+	sb := stringsBuilderPool.Get().(*strings.Builder)
+	defer func() {
+		sb.Reset()
+		stringsBuilderPool.Put(sb)
+	}()
 
-	logContent := fmt.Sprintf(`
-[HTTP Request Log]
--------------------------------
-Time       : %s
-Method     : %s
-URL        : %s
-Host       : %s
-Protocol   : %s
-Transport  :
-%v
-Headers    :
-%v
--------------------------------
-`,
-		time.Now().Format("2006-01-02 15:04:05"),
-		req.Method,
-		req.URL.String(),
-		req.URL.Host,
-		req.Proto,
-		transportDetails,
-		formatHeaders(req.Header),
-	)
+	sb.WriteString("\n[HTTP Request Log]\n")
+	sb.WriteString("-------------------------------\n")
+	sb.WriteString("Time       : ")
+	sb.WriteString(time.Now().Format("2006-01-02 15:04:05\n"))
+	sb.WriteString("Method     : ")
+	sb.WriteString(req.Method)
+	sb.WriteByte('\n')
+	sb.WriteString("URL        : ")
+	sb.WriteString(req.URL.String())
+	sb.WriteByte('\n')
+	sb.WriteString("Host       : ")
+	sb.WriteString(req.URL.Host)
+	sb.WriteByte('\n')
+	sb.WriteString("Protocol   : ")
+	sb.WriteString(req.Proto)
+	sb.WriteByte('\n')
+	sb.WriteString("Transport  :\n")
+	getTransportDetails(c.transport, sb)
+	sb.WriteString("Headers    :\n")
+	formatHeaders(req.Header, sb)
+	sb.WriteString("-------------------------------\n")
 
-	c.dumpLog(req.Context(), logContent)
+	c.dumpLog(req.Context(), sb.String())
 }
 
-// 获取 Transport 的详细信息 (保持原函数不变)
-func getTransportDetails(transport http.RoundTripper) string {
+// 获取 Transport 的详细信息
+func getTransportDetails(transport http.RoundTripper, sb *strings.Builder) {
 	if t, ok := transport.(*http.Transport); ok {
-		return fmt.Sprintf(`  Type                 : *http.Transport
-  MaxIdleConns         : %d
-  MaxIdleConnsPerHost  : %d
-  MaxConnsPerHost      : %d
-  IdleConnTimeout      : %s
-  TLSHandshakeTimeout  : %s
-  DisableKeepAlives    : %v
-  WriteBufferSize      : %d
-  ReadBufferSize       : %d
-  Protocol             : %v
-`,
-			t.MaxIdleConns,
-			t.MaxIdleConnsPerHost,
-			t.MaxConnsPerHost,
-			t.IdleConnTimeout,
-			t.TLSHandshakeTimeout,
-			t.DisableKeepAlives,
-			t.WriteBufferSize,
-			t.ReadBufferSize,
-			t.Protocols,
-		)
+		sb.WriteString("  Type                 : *http.Transport\n")
+		sb.WriteString("  MaxIdleConns         : ")
+		sb.WriteString(strconv.Itoa(t.MaxIdleConns))
+		sb.WriteByte('\n')
+		sb.WriteString("  MaxIdleConnsPerHost  : ")
+		sb.WriteString(strconv.Itoa(t.MaxIdleConnsPerHost))
+		sb.WriteByte('\n')
+		sb.WriteString("  MaxConnsPerHost      : ")
+		sb.WriteString(strconv.Itoa(t.MaxConnsPerHost))
+		sb.WriteByte('\n')
+		sb.WriteString("  IdleConnTimeout      : ")
+		sb.WriteString(t.IdleConnTimeout.String())
+		sb.WriteByte('\n')
+		sb.WriteString("  TLSHandshakeTimeout  : ")
+		sb.WriteString(t.TLSHandshakeTimeout.String())
+		sb.WriteByte('\n')
+		sb.WriteString("  DisableKeepAlives    : ")
+		sb.WriteString(strconv.FormatBool(t.DisableKeepAlives))
+		sb.WriteByte('\n')
+		sb.WriteString("  WriteBufferSize      : ")
+		sb.WriteString(strconv.Itoa(t.WriteBufferSize))
+		sb.WriteByte('\n')
+		sb.WriteString("  ReadBufferSize       : ")
+		sb.WriteString(strconv.Itoa(t.ReadBufferSize))
+		sb.WriteByte('\n')
+		sb.WriteString("  Protocol             : ")
+		fmt.Fprintf(sb, "%v\n", t.Protocols) // 协议部分结构复杂, 暂时保留 Fprintf
+		return
 	}
 
 	if transport != nil {
-		return fmt.Sprintf("  Type                 : %T", transport)
+		sb.WriteString("  Type                 : ")
+		fmt.Fprintf(sb, "%T\n", transport)
+		return
 	}
 
-	return "  Type                 : nil"
+	sb.WriteString("  Type                 : nil\n")
 }
 
 // 格式化请求头为多行字符串
-func formatHeaders(headers http.Header) string {
-	var builder strings.Builder
+func formatHeaders(headers http.Header, sb *strings.Builder) {
 	for key, values := range headers {
-		builder.WriteString(fmt.Sprintf("  %s: %s\n", key, strings.Join(values, ", ")))
+		sb.WriteString("  ")
+		sb.WriteString(key)
+		sb.WriteString(": ")
+		sb.WriteString(strings.Join(values, ", "))
+		sb.WriteByte('\n')
 	}
-	return builder.String()
-}
-
-func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
-	var (
-		resp    *http.Response
-		err     error
-		lastErr error
-	)
-
-	for attempt := 0; attempt <= c.retryOpts.MaxAttempts; attempt++ {
-
-		// 检查ctx状态
-		select {
-		case <-req.Context().Done():
-			return nil, c.wrapError(req.Context().Err())
-		default:
-		}
-
-		resp, err = c.client.Do(req) // 注意这里调用的是 http.Client.Do
-		lastErr = err
-
-		if c.shouldRetry(resp, lastErr) {
-			if attempt < c.retryOpts.MaxAttempts {
-				var delay time.Duration
-				if resp != nil && resp.StatusCode == 429 {
-					delay = c.calculateRetryAfter(resp)
-				} else {
-					delay = c.calculateExponentialBackoff(attempt, c.retryOpts.Jitter) // 传递 Jitter 参数
-				}
-
-				if resp != nil && resp.Body != nil {
-					_, _ = copyb.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
-					resp = nil
-				}
-
-				// 重试前检查ctx
-				select {
-				case <-req.Context().Done():
-					return nil, c.wrapError(req.Context().Err())
-				case <-time.After(delay):
-					continue
-				}
-			} else {
-				return resp, ErrMaxRetriesExceeded
-			}
-		} else {
-			break
-		}
-	}
-
-	if lastErr != nil {
-		return resp, c.wrapError(lastErr)
-	}
-
-	return resp, nil
 }
 
 // 解析 Retry-After 头部，仅在状态码为 429 时调用 (保持原函数不变)
@@ -1094,14 +1008,22 @@ func (rb *RequestBuilder) Bytes() ([]byte, error) {
 }
 
 // decodeJSONResponse 内部 JSON 响应解码
-func (c *Client) decodeJSONResponse(resp *http.Response, v interface{}) error {
+func (c *Client) decodeJSONResponse(resp *http.Response, obj any) error {
 	if resp.StatusCode >= 400 {
 		return c.errorResponse(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+	/*
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
+		}
+	*/
+
+	err := json.UnmarshalRead(resp.Body, obj)
+	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
+
 	return nil
 }
 
@@ -1134,7 +1056,7 @@ func (c *Client) decodeTextResponse(resp *http.Response) (string, error) {
 		return "", c.errorResponse(resp)
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := copyb.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
@@ -1145,7 +1067,7 @@ func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		return nil, c.errorResponse(resp)
 	}
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := copyb.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
@@ -1176,6 +1098,10 @@ func (e *HTTPError) Error() string {
 // 它还会尝试丢弃剩余的响应体以帮助连接复用.
 func (c *Client) errorResponse(resp *http.Response) error {
 
+	if resp == nil {
+		return ErrNoResponse
+	}
+
 	// 定义为错误预览读取的最大字节数
 	const maxErrorBodyRead = 1 * 1024 // 读取最多 1KB
 
@@ -1184,14 +1110,14 @@ func (c *Client) errorResponse(resp *http.Response) error {
 
 	limitedReader := io.LimitReader(resp.Body, maxErrorBodyRead)
 	readErr := func() error { // 使用匿名函数捕获读取错误
-		_, err := io.Copy(buf, limitedReader)
+		_, err := copyb.Copy(buf, limitedReader)
 		return err
 	}() // 立即执行
 
 	// *** 关键: 丢弃剩余的响应体 ***
 	const maxDiscardSize = 64 * 1024
 	discardErr := func() error { // 使用匿名函数捕获丢弃错误
-		_, err := io.CopyN(io.Discard, resp.Body, maxDiscardSize)
+		_, err := copyb.CopyN(io.Discard, resp.Body, maxDiscardSize)
 		// 如果错误是 EOF，说明我们已经读完了或者超出了 maxDiscardSize，这不是一个需要报告的错误
 		if errors.Is(err, io.EOF) {
 			return nil
