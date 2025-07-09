@@ -571,6 +571,12 @@ func (rb *RequestBuilder) SetBody(body io.Reader) *RequestBuilder {
 	return rb
 }
 
+// SetRawBody 设置 Body ([]byte)
+func (rb *RequestBuilder) SetRawBody(body []byte) *RequestBuilder {
+	rb.body = bytes.NewReader(body)
+	return rb
+}
+
 // SetJSONBody 设置 JSON Body
 func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error) {
 	pr, pw := io.Pipe()
