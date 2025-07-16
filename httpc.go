@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-json-experiment/json"
+	"golang.org/x/net/proxy"
 
 	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
 )
@@ -237,6 +238,42 @@ func WithDNSResolver(servers []string, timeout time.Duration) Option {
 
 }
 
+// WithSocks5Proxy 设置 SOCKS5 代理
+// proxyURL: SOCKS5 代理地址, 例如 "socks5://user:password@host:port"
+// 如果代理不需要认证, 可以省略 user:password, 例如 "socks5://host:port"
+func WithSocks5Proxy(proxyURL string) Option {
+	return func(c *Client) {
+		proxyURI, err := url.Parse(proxyURL)
+		if err != nil {
+			return
+		}
+
+		dialer, err := proxy.FromURL(proxyURI, c.dialer)
+		if err != nil {
+			return
+		}
+
+		contextDialer, ok := dialer.(proxy.ContextDialer)
+		if !ok {
+			return
+		}
+
+		c.transport.DialContext = contextDialer.DialContext
+	}
+}
+
+// WithHTTPProxy 设置 HTTP/HTTPS 代理
+// proxyURL: HTTP/HTTPS 代理地址, 例如 "http://user:password@host:port"
+func WithHTTPProxy(proxyURL string) Option {
+	return func(c *Client) {
+		proxy, err := url.Parse(proxyURL)
+		if err != nil {
+			return
+		}
+		c.transport.Proxy = http.ProxyURL(proxy)
+	}
+}
+
 // mergeTransport 将 src 的非零字段合并到 dst 中 (保持原函数不变)
 func mergeTransport(dst, src *http.Transport) {
 	dstVal := reflect.ValueOf(dst).Elem()
@@ -394,6 +431,7 @@ func New(opts ...Option) *Client {
 		maxBufferPool: defaultMaxBufferPool,
 		timeout:       0, // 默认不设置全局超时
 		middlewares:   []MiddlewareFunc{},
+		dialer:        dialer,
 	}
 
 	// 默认 Transport 配置
@@ -568,6 +606,12 @@ func (rb *RequestBuilder) SetQueryParams(params map[string]string) *RequestBuild
 // SetBody 设置 Body (io.Reader)
 func (rb *RequestBuilder) SetBody(body io.Reader) *RequestBuilder {
 	rb.body = body
+	return rb
+}
+
+// SetRawBody 设置 Body ([]byte)
+func (rb *RequestBuilder) SetRawBody(body []byte) *RequestBuilder {
+	rb.body = bytes.NewReader(body)
 	return rb
 }
 
