@@ -21,7 +21,7 @@ import (
 	"github.com/go-json-experiment/json"
 	"golang.org/x/net/proxy"
 
-	"github.com/WJQSERVER-STUDIO/go-utils/copyb"
+	"github.com/WJQSERVER-STUDIO/go-utils/iox"
 )
 
 // 错误定义
@@ -795,7 +795,7 @@ func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 
 			// 在重试前，确保关闭当前失败的响应体以复用连接
 			if resp != nil && resp.Body != nil {
-				copyb.Copy(io.Discard, resp.Body)
+				iox.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
 			}
 
@@ -1092,7 +1092,7 @@ func (c *Client) decodeTextResponse(resp *http.Response) (string, error) {
 		return "", c.errorResponse(resp)
 	}
 
-	bodyBytes, err := copyb.ReadAll(resp.Body)
+	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
@@ -1103,7 +1103,7 @@ func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		return nil, c.errorResponse(resp)
 	}
-	bodyBytes, err := copyb.ReadAll(resp.Body)
+	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrDecodeResponse, err)
 	}
@@ -1146,14 +1146,14 @@ func (c *Client) errorResponse(resp *http.Response) error {
 
 	limitedReader := io.LimitReader(resp.Body, maxErrorBodyRead)
 	readErr := func() error { // 使用匿名函数捕获读取错误
-		_, err := copyb.Copy(buf, limitedReader)
+		_, err := iox.Copy(buf, limitedReader)
 		return err
 	}() // 立即执行
 
 	// *** 关键: 丢弃剩余的响应体 ***
 	const maxDiscardSize = 64 * 1024
 	discardErr := func() error { // 使用匿名函数捕获丢弃错误
-		_, err := copyb.CopyN(io.Discard, resp.Body, maxDiscardSize)
+		_, err := iox.CopyN(io.Discard, resp.Body, maxDiscardSize)
 		// 如果错误是 EOF，说明我们已经读完了或者超出了 maxDiscardSize，这不是一个需要报告的错误
 		if errors.Is(err, io.EOF) {
 			return nil
