@@ -1094,7 +1094,7 @@ func (c *Client) decodeTextResponse(resp *http.Response) (string, error) {
 
 	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDecodeResponse, err)
+return "", fmt.Errorf("%w: %s", err, ErrDecodeResponse)
 	}
 	return string(bodyBytes), nil
 }
