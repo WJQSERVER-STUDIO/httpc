@@ -1105,7 +1105,7 @@ func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 	}
 	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDecodeResponse, err)
+return nil, fmt.Errorf("%w: %s", err, ErrDecodeResponse)
 	}
 	return bodyBytes, nil
 }
