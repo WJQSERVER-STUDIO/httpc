@@ -7,5 +7,5 @@ require github.com/valyala/bytebufferpool v1.0.0 // indirect
 require (
 	github.com/WJQSERVER-STUDIO/go-utils/iox v0.0.2
 	github.com/go-json-experiment/json v0.0.0-20250714165856-be8212f5270d
-	golang.org/x/net v0.42.0
+	golang.org/x/net v0.48.0
 )
