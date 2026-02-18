@@ -59,13 +59,7 @@ func New(opts ...Option) *Client {
 		maxIdleConns:  defaultMaxIdleConns,
 		bufferSize:    defaultBufferSize,
 		maxBufferPool: defaultMaxBufferPool,
-		retryOpts: RetryOptions{
-			MaxAttempts:   2,
-			BaseDelay:     100 * time.Millisecond,
-			MaxDelay:      1 * time.Second,
-			RetryStatuses: []int{429, 500, 502, 503, 504},
-			Jitter:        false,
-		},
+		retryOpts:     defaultRetryOptions(),
 	}
 
 	for _, opt := range opts {
@@ -80,6 +74,16 @@ func New(opts ...Option) *Client {
 	c.transport.MaxIdleConnsPerHost = c.maxIdleConns / 2
 
 	return c
+}
+
+func defaultRetryOptions() RetryOptions {
+	return RetryOptions{
+		MaxAttempts:   2,
+		BaseDelay:     100 * time.Millisecond,
+		MaxDelay:      1 * time.Second,
+		RetryStatuses: []int{429, 500, 502, 503, 504},
+		Jitter:        false,
+	}
 }
 
 // SetRetryOptions 动态修改重试选项
@@ -98,7 +102,7 @@ func (c *Client) SetTimeout(timeout time.Duration) {
 	c.client.Timeout = timeout
 }
 
-// SetProtocols 动态配置协议 (使用 Go 1.24+ 的 Protocols 字段)
+// SetProtocols 动态配置协议
 func (c *Client) SetProtocols(config ProtocolsConfig) {
 	if c.transport.Protocols == nil {
 		c.transport.Protocols = new(http.Protocols)
@@ -118,61 +122,101 @@ func (c *Client) SetProtocols(config ProtocolsConfig) {
 	c.transport.ForceAttemptHTTP2 = config.Http2 || config.Http2_Cleartext
 }
 
-// Do 执行请求，包含重试和中间件逻辑
+// Do 执行请求
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	if req.Header.Get("User-Agent") == "" {
-		req.Header.Set("User-Agent", c.userAgent)
+	var finalRT http.RoundTripper = c.transport
+
+	for i := len(c.middlewares) - 1; i >= 0; i-- {
+		finalRT = c.middlewares[i](finalRT)
 	}
 
-	var finalHandler http.RoundTripper = RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	if c.dumpLog != nil {
+		finalRT = c.logRoundTripper(finalRT)
+	}
+
+	if c.retryOpts.MaxAttempts > 0 {
+		finalRT = c.retryRoundTripper(finalRT)
+	}
+
+	return finalRT.RoundTrip(req)
+}
+
+func (c *Client) logRoundTripper(next http.RoundTripper) http.RoundTripper {
+	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		c.logRequest(req)
+		return next.RoundTrip(req)
+	})
+}
+
+func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
+	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		var bodyReaderFunc func() (io.ReadCloser, error)
+		if req.GetBody != nil {
+			bodyReaderFunc = req.GetBody
+		}
+
 		var lastResp *http.Response
 		var lastErr error
 
 		for attempt := 0; attempt <= c.retryOpts.MaxAttempts; attempt++ {
 			if attempt > 0 {
-				delay := c.calculateRetryAfter(lastResp)
-				if delay == 0 || lastResp == nil || lastResp.StatusCode != 429 {
-					delay = c.calculateExponentialBackoff(attempt-1, c.retryOpts.Jitter)
-				}
-
-				select {
-				case <-r.Context().Done():
-					if lastResp != nil {
-						lastResp.Body.Close()
+				if bodyReaderFunc != nil {
+					newBody, err := bodyReaderFunc()
+					if err != nil {
+						if lastResp != nil {
+							lastResp.Body.Close()
+						}
+						return nil, fmt.Errorf("httpc: failed to get request body for retry attempt %d: %w", attempt, err)
 					}
-					return nil, r.Context().Err()
-				case <-time.After(delay):
+					req.Body = newBody
+				} else if req.Body != nil && req.Body != http.NoBody {
+					break
 				}
+			}
 
+			select {
+			case <-req.Context().Done():
 				if lastResp != nil {
 					lastResp.Body.Close()
 				}
+				return nil, c.wrapError(req.Context().Err())
+			default:
 			}
 
-			// 记录日志
-			if c.dumpLog != nil {
-				c.logRequest(r)
+			resp, err := next.RoundTrip(req)
+			lastResp, lastErr = resp, err
+
+			if !c.shouldRetry(resp, err) {
+				break
 			}
 
-			lastResp, lastErr = c.client.Transport.RoundTrip(r)
+			if attempt >= c.retryOpts.MaxAttempts {
+				lastErr = ErrMaxRetriesExceeded
+				break
+			}
 
-			if !c.shouldRetry(lastResp, lastErr) {
-				return lastResp, lastErr
+			delay := c.calculateRetryAfter(resp)
+			if delay <= 0 {
+				delay = c.calculateExponentialBackoff(attempt, c.retryOpts.Jitter)
+			}
+
+			if resp != nil && resp.Body != nil {
+				iox.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+
+			select {
+			case <-req.Context().Done():
+				return nil, c.wrapError(req.Context().Err())
+			case <-time.After(delay):
 			}
 		}
 
 		if lastErr != nil {
-			return nil, c.wrapError(lastErr)
+			return lastResp, c.wrapError(lastErr)
 		}
 		return lastResp, nil
 	})
-
-	// 应用中间件
-	for i := len(c.middlewares) - 1; i >= 0; i-- {
-		finalHandler = c.middlewares[i](finalHandler)
-	}
-
-	return finalHandler.RoundTrip(req)
 }
 
 func (c *Client) logRequest(req *http.Request) {
@@ -221,11 +265,15 @@ func (c *Client) calculateRetryAfter(resp *http.Response) time.Duration {
 			return delay
 		}
 	}
-	return 0
+	return c.retryOpts.BaseDelay
 }
 
 func (c *Client) calculateExponentialBackoff(attempt int, jitter bool) time.Duration {
-	delay := min(c.retryOpts.BaseDelay*time.Duration(1<<uint(attempt)), c.retryOpts.MaxDelay)
+	delay := c.retryOpts.BaseDelay * time.Duration(1<<uint(attempt))
+	if delay > c.retryOpts.MaxDelay {
+		delay = c.retryOpts.MaxDelay
+	}
+
 	if jitter {
 		randomFactor := 0.8 + 0.4*float64(attempt)
 		delay = time.Duration(float64(delay) * randomFactor)
