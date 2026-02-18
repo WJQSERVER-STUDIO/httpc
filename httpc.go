@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -298,7 +299,7 @@ func mergeTransport(dst, src *http.Transport) {
 // isZero 检查反射值是否为对应类型的零值 (保持原函数不变)
 func isZero(v reflect.Value) bool {
 	switch v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return v.IsNil()
 	default:
 		z := reflect.Zero(v.Type())
@@ -616,7 +617,7 @@ func (rb *RequestBuilder) SetRawBody(body []byte) *RequestBuilder {
 }
 
 // SetJSONBody 设置 JSON Body
-func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error) {
+func (rb *RequestBuilder) SetJSONBody(body any) (*RequestBuilder, error) {
 	pr, pw := io.Pipe()
 	rb.body = pr
 	rb.header.Set("Content-Type", "application/json")
@@ -633,7 +634,7 @@ func (rb *RequestBuilder) SetJSONBody(body interface{}) (*RequestBuilder, error)
 }
 
 // SetXMLBody 设置 XML Body
-func (rb *RequestBuilder) SetXMLBody(body interface{}) (*RequestBuilder, error) {
+func (rb *RequestBuilder) SetXMLBody(body any) (*RequestBuilder, error) {
 	buf := rb.client.bufferPool.Get()
 	defer rb.client.bufferPool.Put(buf)
 
@@ -646,7 +647,7 @@ func (rb *RequestBuilder) SetXMLBody(body interface{}) (*RequestBuilder, error) 
 }
 
 // SetGOBBody 设置GOB Body
-func (rb *RequestBuilder) SetGOBBody(body interface{}) (*RequestBuilder, error) {
+func (rb *RequestBuilder) SetGOBBody(body any) (*RequestBuilder, error) {
 	buf := rb.client.bufferPool.Get()
 	defer rb.client.bufferPool.Put(buf)
 
@@ -679,9 +680,7 @@ func (rb *RequestBuilder) Build() (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range rb.header {
-		req.Header[k] = v
-	}
+	maps.Copy(req.Header, rb.header)
 	if !rb.noDefaultHeaders && req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", rb.client.userAgent)
 	}
@@ -937,10 +936,7 @@ func parseRetryAfter(retryAfter string) (time.Duration, error) {
 
 // 指数退避计算 (修改为支持 Jitter)
 func (c *Client) calculateExponentialBackoff(attempt int, jitter bool) time.Duration {
-	delay := c.retryOpts.BaseDelay * time.Duration(1<<uint(attempt))
-	if delay > c.retryOpts.MaxDelay {
-		delay = c.retryOpts.MaxDelay
-	}
+	delay := min(c.retryOpts.BaseDelay*time.Duration(1<<uint(attempt)), c.retryOpts.MaxDelay)
 
 	if jitter {
 		// 添加 Jitter 抖动，防止 thundering herd 问题
@@ -986,7 +982,7 @@ func isNetworkError(err error) bool {
 // --- 响应处理方法 (使用 RequestBuilder 重构) ---
 
 // DecodeJSON 解析 JSON 响应
-func (rb *RequestBuilder) DecodeJSON(v interface{}) error {
+func (rb *RequestBuilder) DecodeJSON(v any) error {
 	resp, err := rb.Execute()
 	if err != nil {
 		return err
@@ -1004,7 +1000,7 @@ func (rb *RequestBuilder) DecodeJSON(v interface{}) error {
 }
 
 // DecodeXML 解析 XML 响应
-func (rb *RequestBuilder) DecodeXML(v interface{}) error {
+func (rb *RequestBuilder) DecodeXML(v any) error {
 	resp, err := rb.Execute()
 	if err != nil {
 		return err
@@ -1014,7 +1010,7 @@ func (rb *RequestBuilder) DecodeXML(v interface{}) error {
 }
 
 // DecodeGOB 解析 GOB 响应
-func (rb *RequestBuilder) DecodeGOB(v interface{}) error {
+func (rb *RequestBuilder) DecodeGOB(v any) error {
 	resp, err := rb.Execute()
 	if err != nil {
 		return err
@@ -1063,7 +1059,7 @@ func (c *Client) decodeJSONResponse(resp *http.Response, obj any) error {
 	return nil
 }
 
-func (c *Client) decodeXMLResponse(resp *http.Response, v interface{}) error {
+func (c *Client) decodeXMLResponse(resp *http.Response, v any) error {
 	if resp.StatusCode >= 400 {
 		return c.errorResponse(resp)
 	}
@@ -1073,7 +1069,7 @@ func (c *Client) decodeXMLResponse(resp *http.Response, v interface{}) error {
 	return nil
 }
 
-func (c *Client) decodeGOBResponse(resp *http.Response, v interface{}) error {
+func (c *Client) decodeGOBResponse(resp *http.Response, v any) error {
 	if resp.StatusCode >= 400 {
 		return c.errorResponse(resp)
 	}
@@ -1094,7 +1090,7 @@ func (c *Client) decodeTextResponse(resp *http.Response) (string, error) {
 
 	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
-return "", fmt.Errorf("%w: %s", err, ErrDecodeResponse)
+		return "", fmt.Errorf("%w: %s", err, ErrDecodeResponse)
 	}
 	return string(bodyBytes), nil
 }
@@ -1105,7 +1101,7 @@ func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 	}
 	bodyBytes, err := iox.ReadAll(resp.Body)
 	if err != nil {
-return nil, fmt.Errorf("%w: %s", err, ErrDecodeResponse)
+		return nil, fmt.Errorf("%w: %s", err, ErrDecodeResponse)
 	}
 	return bodyBytes, nil
 }
@@ -1221,7 +1217,7 @@ func (c *Client) GetContext(ctx context.Context, url string) (*http.Response, er
 }
 
 // PostJSON 发送 JSON POST 请求
-func (c *Client) PostJSON(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PostJSON(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.POST(url)
 	_, err := builder.SetJSONBody(body)
 	if err != nil {
@@ -1231,7 +1227,7 @@ func (c *Client) PostJSON(ctx context.Context, url string, body interface{}) (*h
 }
 
 // PostXML 发送 XML POST 请求
-func (c *Client) PostXML(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PostXML(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.POST(url)
 	_, err := builder.SetXMLBody(body)
 	if err != nil {
@@ -1241,7 +1237,7 @@ func (c *Client) PostXML(ctx context.Context, url string, body interface{}) (*ht
 }
 
 // PostGOB 发送 GOB POST 请求
-func (c *Client) PostGOB(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PostGOB(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.POST(url)
 	_, err := builder.SetGOBBody(body)
 	if err != nil {
@@ -1251,7 +1247,7 @@ func (c *Client) PostGOB(ctx context.Context, url string, body interface{}) (*ht
 }
 
 // PutJSON 发送 JSON PUT 请求
-func (c *Client) PutJSON(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PutJSON(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.PUT(url)
 	_, err := builder.SetJSONBody(body)
 	if err != nil {
@@ -1261,7 +1257,7 @@ func (c *Client) PutJSON(ctx context.Context, url string, body interface{}) (*ht
 }
 
 // PutXML 发送 XML PUT 请求
-func (c *Client) PutXML(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PutXML(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.PUT(url)
 	_, err := builder.SetXMLBody(body)
 	if err != nil {
@@ -1271,7 +1267,7 @@ func (c *Client) PutXML(ctx context.Context, url string, body interface{}) (*htt
 }
 
 // PutGOB 发送 GOB PUT 请求
-func (c *Client) PutGOB(ctx context.Context, url string, body interface{}) (*http.Response, error) {
+func (c *Client) PutGOB(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.PUT(url)
 	_, err := builder.SetGOBBody(body)
 	if err != nil {
