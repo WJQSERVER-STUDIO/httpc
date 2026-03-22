@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
 
 // SSEEvent 表示一个服务器发送事件.
@@ -55,7 +56,7 @@ func (e *SSEEvent) Render(w io.Writer) error {
 type SSEStream struct {
 	resp   *http.Response
 	reader *bufio.Reader
-	closed bool
+	closed atomic.Bool
 }
 
 // Response 返回建立流时的原始 HTTP 响应.
@@ -68,10 +69,12 @@ func (s *SSEStream) Response() *http.Response {
 
 // Close 关闭底层 SSE 响应体.
 func (s *SSEStream) Close() error {
-	if s == nil || s.resp == nil || s.resp.Body == nil || s.closed {
+	if s == nil || s.resp == nil || s.resp.Body == nil {
 		return nil
 	}
-	s.closed = true
+	if s.closed.Swap(true) {
+		return nil
+	}
 	return s.resp.Body.Close()
 }
 
@@ -210,7 +213,7 @@ func readSSELine(r *bufio.Reader) (line string, eof bool, err error) {
 		case '\n':
 			return buf.String(), false, nil
 		case '\r':
-			if next, peekErr := r.Peek(1); peekErr == nil && len(next) == 1 && next[0] == '\n' {
+			if next, peekErr := r.Peek(1); peekErr == nil && next[0] == '\n' {
 				_, _ = r.ReadByte()
 			}
 			return buf.String(), false, nil

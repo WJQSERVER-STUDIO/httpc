@@ -58,6 +58,12 @@ func main() {
 httpc 提供了原生 SSE 客户端支持，可直接连接 `text/event-stream` 端点并逐帧解析事件。
 
 ```go
+import (
+    "errors"
+    "fmt"
+    "io"
+)
+
 stream, err := client.GET("https://api.example.com/events").SSE()
 if err != nil {
     return
@@ -66,7 +72,7 @@ defer stream.Close()
 
 for {
     event, err := stream.Next()
-    if err == io.EOF {
+    if errors.Is(err, io.EOF) {
         break
     }
     if err != nil {

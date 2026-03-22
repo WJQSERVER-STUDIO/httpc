@@ -121,7 +121,7 @@ stream, err := client.GetSSE(ctx, "https://api.example.com/events")
 ```go
 for {
     event, err := stream.Next()
-    if err == io.EOF {
+    if errors.Is(err, io.EOF) {
         break
     }
     if err != nil {
