@@ -58,6 +58,7 @@ type Client struct {
 	client        *http.Client
 	transport     *http.Transport
 	retryOpts     RetryOptions
+	randomFloat64 func() float64
 	bufferPool    BufferPool
 	userAgent     string
 	dumpLog       DumpLogFunc      // 日志记录函数

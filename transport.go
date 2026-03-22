@@ -252,14 +252,19 @@ func parseRetryAfter(retryAfter string) (time.Duration, error) {
 	return 0, errors.New("invalid Retry-After value")
 }
 
-// 指数退避计算 (修改为支持 Jitter)
+// 指数退避计算，启用 jitter 时在 [0.5, 1.5) 区间内随机扰动。
 func (c *Client) calculateExponentialBackoff(attempt int, jitter bool) time.Duration {
 	delay := min(c.retryOpts.BaseDelay*time.Duration(1<<uint(attempt)), c.retryOpts.MaxDelay)
 
 	if jitter {
-		// 添加 Jitter 抖动，防止 thundering herd 问题
-		randomFactor := 0.8 + 0.4*float64(attempt) // 随着重试次数增加，抖动范围略微扩大
+		randomFactor := 0.5 + c.randomFloat64()
 		delay = time.Duration(float64(delay) * randomFactor)
+		if delay > c.retryOpts.MaxDelay {
+			return c.retryOpts.MaxDelay
+		}
+		if delay < 0 {
+			return 0
+		}
 	}
 	return delay
 }
