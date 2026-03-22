@@ -17,7 +17,7 @@ client := httpc.New(httpc.WithRetryOptions(httpc.RetryOptions{
 - `BaseDelay`: 基础延迟，用于计算退避时间
 - `MaxDelay`: 最大延迟上限
 - `RetryStatuses`: 触发重试的 HTTP 状态码列表
-- `Jitter`: 是否添加抖动 (当前基于 attempt 固定比例，非随机)
+- `Jitter`: 是否添加随机抖动
 
 ### 重试触发条件
 
@@ -33,7 +33,7 @@ client := httpc.New(httpc.WithRetryOptions(httpc.RetryOptions{
 delay = min(BaseDelay * 2^attempt, MaxDelay)
 ```
 
-当 `Jitter` 为 true 时，乘以 `0.8 + 0.4 * attempt` 作为抖动因子。
+当 `Jitter` 为 true 时，会在指数退避结果的基础上应用 `[0.5x, 1.5x)` 区间内的随机扰动，同时仍然受 `MaxDelay` 限制。
 
 ### Retry-After 支持
 
