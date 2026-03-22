@@ -142,3 +142,31 @@ func TestClientGetSSEReturnsHTTPError(t *testing.T) {
 		t.Fatalf("StatusCode = %d, want %d", httpErr.StatusCode, http.StatusTeapot)
 	}
 }
+
+func TestSSEStreamParsesUnterminatedStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: hello\n")
+	}))
+	defer server.Close()
+
+	stream, err := New().GET(server.URL).SSE()
+	if err != nil {
+		t.Fatalf("SSE() error = %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Data != "hello" {
+		t.Fatalf("event.Data = %q, want %q", event.Data, "hello")
+	}
+
+	_, err = stream.Next()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("second Next() error = %v, want io.EOF", err)
+	}
+}

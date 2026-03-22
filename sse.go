@@ -93,14 +93,14 @@ func (s *SSEStream) Next() (*SSEEvent, error) {
 		}
 
 		if line == "" {
-			if !hasFields {
-				if eof {
-					return nil, io.EOF
-				}
-				continue
+			if hasFields {
+				event.Data = strings.Join(dataLines, "\n")
+				return &event, nil
 			}
-			event.Data = strings.Join(dataLines, "\n")
-			return &event, nil
+			if eof {
+				return nil, io.EOF
+			}
+			continue
 		}
 
 		if strings.HasPrefix(line, ":") {
@@ -129,6 +129,10 @@ func (s *SSEStream) Next() (*SSEEvent, error) {
 		}
 
 		if eof {
+			if hasFields {
+				event.Data = strings.Join(dataLines, "\n")
+				return &event, nil
+			}
 			return nil, io.EOF
 		}
 	}
