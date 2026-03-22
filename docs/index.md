@@ -4,6 +4,7 @@
 
 - [概述](#概述)
 - [快速开始](#快速开始)
+- [SSE 支持](#sse-支持)
 - [架构说明](#架构说明)
 - [完整文档](#完整文档)
 
@@ -52,6 +53,43 @@ func main() {
 }
 ```
 
+## SSE 支持
+
+httpc 提供了原生 SSE 客户端支持，可直接连接 `text/event-stream` 端点并逐帧解析事件。
+
+```go
+import (
+    "errors"
+    "fmt"
+    "io"
+)
+
+stream, err := client.GET("https://api.example.com/events").SSE()
+if err != nil {
+    return
+}
+defer stream.Close()
+
+for {
+    event, err := stream.Next()
+    if errors.Is(err, io.EOF) {
+        break
+    }
+    if err != nil {
+        return
+    }
+    fmt.Printf("event=%s id=%s data=%q retry=%s\n",
+        event.Event, event.Id, event.Data, event.Retry)
+}
+```
+
+SSE 线格式与 touka 框架的服务端 `Event.Render` 输出兼容，支持：
+- `event:`
+- `data:` 多行聚合
+- `id:`
+- `retry:`
+- 注释行 `:` 和空 keepalive 块忽略
+
 ## 架构说明
 
 httpc 采用分层设计，按职责拆分为多个源码文件：
@@ -89,5 +127,6 @@ DNS 解析层        → resolver.go         (customDialer)
 - [客户端配置](client.md) — 创建客户端、Option 配置详解
 - [请求构建](builder.md) — RequestBuilder 用法
 - [响应处理](response.md) — 响应解码与错误处理
+- [SSE 流处理](response.md#sse-流处理) — SSE 连接建立、事件解析与关闭
 - [重试与中间件](retry-middleware.md) — 重试策略、日志、中间件
 - [Transport 与协议](transport.md) — Transport 配置、HTTP/2、代理、DNS

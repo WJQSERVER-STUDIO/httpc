@@ -97,3 +97,68 @@ var (
 2. 丢弃剩余 body (最多 64KB)，帮助 HTTP 连接复用
 
 这确保即使在错误响应场景下，底层连接也能被正确归还到连接池。
+
+## SSE 流处理
+
+### 建立 SSE 连接
+
+```go
+stream, err := client.GET("https://api.example.com/events").SSE()
+if err != nil {
+    return err
+}
+defer stream.Close()
+```
+
+或者使用标准库兼容入口：
+
+```go
+stream, err := client.GetSSE(ctx, "https://api.example.com/events")
+```
+
+### 读取事件
+
+```go
+for {
+    event, err := stream.Next()
+    if errors.Is(err, io.EOF) {
+        break
+    }
+    if err != nil {
+        return err
+    }
+
+    fmt.Println("event:", event.Event)
+    fmt.Println("id:", event.Id)
+    fmt.Println("retry:", event.Retry)
+    fmt.Println("data:", event.Data)
+}
+```
+
+### 解析规则
+
+SSE 解析行为遵循 WHATWG/MDN 约定，并与 touka 的服务端渲染格式兼容：
+
+- `data:` 多行会按 `\n` 连接为一个 `Data` 字段
+- `event:` 解析为 `Event`
+- `id:` 解析为 `Id`
+- `retry:` 解析为 `Retry`
+- 以 `:` 开头的注释行会被忽略
+- 空块和 keepalive 块会被忽略
+- 如果流在事件结束空行之前断开，但当前事件已经解析到字段，客户端会返回这条最后事件，再在后续读取中返回 `io.EOF`
+
+### SSE 建立时的校验
+
+`SSE()` 在建连时会做以下校验：
+
+1. 自动补 `Accept: text/event-stream`（如果调用方未设置）
+2. 如果状态码 `>= 400`，返回 `*HTTPError`
+3. 如果 `Content-Type` 不是 `text/event-stream`，返回 `ErrInvalidSSEStream`
+
+### 手动关闭
+
+SSE 属于长连接，请在不再使用时调用 `Close()`：
+
+```go
+defer stream.Close()
+```

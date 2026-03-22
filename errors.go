@@ -17,6 +17,7 @@ var (
 	ErrMaxRetriesExceeded = errors.New("httpc: max retries exceeded")
 	ErrDecodeResponse     = errors.New("httpc: failed to decode response body")
 	ErrInvalidURL         = errors.New("httpc: invalid URL")
+	ErrInvalidSSEStream   = errors.New("httpc: invalid SSE stream")
 	ErrNoResponse         = errors.New("httpc: no response")
 )
 

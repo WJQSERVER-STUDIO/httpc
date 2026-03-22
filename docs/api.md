@@ -134,6 +134,47 @@ type HTTPError struct {
 
 ---
 
+### `SSEEvent`
+
+表示一个已解析或待渲染的 SSE 事件：
+
+```go
+type SSEEvent struct {
+    Event string
+    Data  string
+    Id    string
+    Retry string
+}
+```
+
+#### `func (e *SSEEvent) Render(w io.Writer) error`
+
+将事件编码为 SSE 线格式，输出与 touka 的服务端 SSE 事件格式兼容。
+
+---
+
+### `SSEStream`
+
+表示一个已建立的 SSE 流连接：
+
+```go
+type SSEStream struct { ... }
+```
+
+#### 方法
+
+```go
+func (s *SSEStream) Next() (*SSEEvent, error)
+func (s *SSEStream) Close() error
+func (s *SSEStream) Response() *http.Response
+```
+
+- `Next()` 逐帧读取并解析下一个 SSE 事件
+- `Close()` 关闭底层响应体
+- `Response()` 返回建立连接时的原始 HTTP 响应
+
+---
+
 ## 导出变量
 
 ```go
@@ -142,6 +183,7 @@ var (
     ErrMaxRetriesExceeded // 超过最大重试次数
     ErrDecodeResponse     // 响应解码失败
     ErrInvalidURL         // 无效 URL
+    ErrInvalidSSEStream   // 非法 SSE 流或错误 Content-Type
     ErrNoResponse         // 无响应
 )
 ```
@@ -190,6 +232,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error)
 ```go
 func (c *Client) Get(url string) (*http.Response, error)
 func (c *Client) GetContext(ctx context.Context, url string) (*http.Response, error)
+func (c *Client) GetSSE(ctx context.Context, url string) (*SSEStream, error)
 func (c *Client) Post(ctx context.Context, url string, body io.Reader) (*http.Response, error)
 func (c *Client) PostJSON(ctx context.Context, url string, body any) (*http.Response, error)
 func (c *Client) PostXML(ctx context.Context, url string, body any) (*http.Response, error)
@@ -251,6 +294,7 @@ func (rb *RequestBuilder) SetGOBBody(body any) (*RequestBuilder, error)
 ```go
 func (rb *RequestBuilder) Build() (*http.Request, error)
 func (rb *RequestBuilder) Execute() (*http.Response, error)
+func (rb *RequestBuilder) SSE() (*SSEStream, error)
 func (rb *RequestBuilder) DecodeJSON(v any) error
 func (rb *RequestBuilder) DecodeXML(v any) error
 func (rb *RequestBuilder) DecodeGOB(v any) error
