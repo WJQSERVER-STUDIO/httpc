@@ -1,6 +1,7 @@
 package httpc
 
 import (
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"runtime"
@@ -36,6 +37,7 @@ func New(opts ...Option) *Client {
 		},
 		//transport:     transport,
 		retryOpts:     defaultRetryOptions(),
+		randomFloat64: rand.Float64,
 		bufferPool:    newDefaultPool(defaultBufferSize),
 		userAgent:     defaultUserAgent,
 		dumpLog:       nil, // 默认不启用日志

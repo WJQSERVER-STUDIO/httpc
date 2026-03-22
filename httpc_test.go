@@ -203,3 +203,55 @@ func TestPostJSONSetsContentTypeAndHonorsContext(t *testing.T) {
 		t.Fatal("request context was not propagated")
 	}
 }
+
+func TestCalculateExponentialBackoffWithoutJitter(t *testing.T) {
+	client := New(WithRetryOptions(RetryOptions{
+		BaseDelay: 100 * time.Millisecond,
+		MaxDelay:  700 * time.Millisecond,
+	}))
+
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: 100 * time.Millisecond},
+		{attempt: 1, want: 200 * time.Millisecond},
+		{attempt: 2, want: 400 * time.Millisecond},
+		{attempt: 3, want: 700 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		if got := client.calculateExponentialBackoff(tt.attempt, false); got != tt.want {
+			t.Fatalf("attempt %d: backoff = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestCalculateExponentialBackoffWithJitterUsesRandomFactor(t *testing.T) {
+	client := New(WithRetryOptions(RetryOptions{
+		BaseDelay: 200 * time.Millisecond,
+		MaxDelay:  time.Second,
+		Jitter:    true,
+	}))
+	client.randomFloat64 = func() float64 { return 0.25 }
+
+	got := client.calculateExponentialBackoff(1, true)
+	want := 300 * time.Millisecond
+	if got != want {
+		t.Fatalf("backoff with jitter = %v, want %v", got, want)
+	}
+}
+
+func TestCalculateExponentialBackoffWithJitterStillHonorsMaxDelay(t *testing.T) {
+	client := New(WithRetryOptions(RetryOptions{
+		BaseDelay: 500 * time.Millisecond,
+		MaxDelay:  800 * time.Millisecond,
+		Jitter:    true,
+	}))
+	client.randomFloat64 = func() float64 { return 0.99 }
+
+	got := client.calculateExponentialBackoff(3, true)
+	if got != 800*time.Millisecond {
+		t.Fatalf("backoff with jitter cap = %v, want %v", got, 800*time.Millisecond)
+	}
+}
