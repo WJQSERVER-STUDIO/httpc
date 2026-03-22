@@ -107,9 +107,6 @@ func (s *SSEStream) Next() (*SSEEvent, error) {
 		}
 
 		if strings.HasPrefix(line, ":") {
-			if eof {
-				return nil, io.EOF
-			}
 			continue
 		}
 
@@ -127,8 +124,10 @@ func (s *SSEStream) Next() (*SSEEvent, error) {
 				hasFields = true
 			}
 		case "retry":
-			event.Retry = value
-			hasFields = true
+			if isDigits(value) {
+				event.Retry = value
+				hasFields = true
+			}
 		}
 
 		if eof {
@@ -192,6 +191,18 @@ func parseSSEField(line string) (field, value string) {
 		value = value[1:]
 	}
 	return field, value
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func readSSELine(r *bufio.Reader) (line string, eof bool, err error) {

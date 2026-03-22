@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,9 +31,11 @@ func TestSSEEventRenderMatchesToukaWireFormat(t *testing.T) {
 }
 
 func TestRequestBuilderSSEParsesToukaStyleEventStream(t *testing.T) {
+	handlerErrCh := make(chan error, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Accept"); got != "text/event-stream" {
-			t.Fatalf("Accept = %q, want text/event-stream", got)
+			handlerErrCh <- fmt.Errorf("Accept = %q, want text/event-stream", got)
+			return
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -40,7 +43,8 @@ func TestRequestBuilderSSEParsesToukaStyleEventStream(t *testing.T) {
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			t.Fatal("ResponseWriter does not implement http.Flusher")
+			handlerErrCh <- errors.New("ResponseWriter does not implement http.Flusher")
+			return
 		}
 
 		first := SSEEvent{
@@ -50,13 +54,15 @@ func TestRequestBuilderSSEParsesToukaStyleEventStream(t *testing.T) {
 			Retry: "3000",
 		}
 		if err := first.Render(w); err != nil {
-			t.Fatalf("Render() first event error = %v", err)
+			handlerErrCh <- fmt.Errorf("Render() first event error = %v", err)
+			return
 		}
 		flusher.Flush()
 
 		second := SSEEvent{Data: "plain"}
 		if err := second.Render(w); err != nil {
-			t.Fatalf("Render() second event error = %v", err)
+			handlerErrCh <- fmt.Errorf("Render() second event error = %v", err)
+			return
 		}
 		flusher.Flush()
 	}))
@@ -104,6 +110,12 @@ func TestRequestBuilderSSEParsesToukaStyleEventStream(t *testing.T) {
 
 	if _, err := stream.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("third Next() error = %v, want io.EOF", err)
+	}
+
+	select {
+	case err := <-handlerErrCh:
+		t.Fatalf("handler error: %v", err)
+	default:
 	}
 }
 
@@ -168,5 +180,31 @@ func TestSSEStreamParsesUnterminatedStream(t *testing.T) {
 	_, err = stream.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("second Next() error = %v, want io.EOF", err)
+	}
+}
+
+func TestSSEStreamIgnoresInvalidRetryField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "retry: 3s\ndata: hello\n\n")
+	}))
+	defer server.Close()
+
+	stream, err := New().GET(server.URL).SSE()
+	if err != nil {
+		t.Fatalf("SSE() error = %v", err)
+	}
+	defer stream.Close()
+
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil", err)
+	}
+	if event.Retry != "" {
+		t.Fatalf("event.Retry = %q, want empty", event.Retry)
+	}
+	if event.Data != "hello" {
+		t.Fatalf("event.Data = %q, want %q", event.Data, "hello")
 	}
 }
