@@ -100,7 +100,11 @@ func (c *Client) retryRoundTripper(next http.RoundTripper) http.RoundTripper {
 
 			// 如果是最后一次尝试，则不再重试，直接返回结果
 			if attempt >= c.retryOpts.MaxAttempts {
-				lastErr = ErrMaxRetriesExceeded
+				// 仅在无响应时设置 ErrMaxRetriesExceeded
+				// 有 HTTP 响应时保持 lastErr 为 nil，让下游 errorResponse() 正确构造包含响应体的 HTTPError
+				if resp == nil {
+					lastErr = ErrMaxRetriesExceeded
+				}
 				break
 			}
 
