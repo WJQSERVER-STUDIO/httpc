@@ -695,3 +695,114 @@ func TestRedirectCheckRedirectOverridesMaxRedirects(t *testing.T) {
 		t.Fatalf("error = %v, want custom limit reached", err)
 	}
 }
+
+func TestBodySlurpCopyNDoesNotBlockOnSmallChunkedBody(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	chunkedRedirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte("small"))
+	}))
+	defer chunkedRedirector.Close()
+
+	done := make(chan struct{})
+	var resp *http.Response
+	var execErr error
+
+	go func() {
+		defer close(done)
+		resp, execErr = New(WithMaxRedirects(10)).GET(chunkedRedirector.URL).Execute()
+	}()
+
+	select {
+	case <-done:
+		if execErr != nil {
+			t.Fatalf("Execute() error = %v", execErr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("body slurp blocked: io.CopyN did not return within timeout")
+	}
+}
+
+func TestBodySlurpCopyNDoesNotBlockOnEmptyChunkedBody(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	chunkedRedirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer chunkedRedirector.Close()
+
+	done := make(chan struct{})
+	var resp *http.Response
+	var execErr error
+
+	go func() {
+		defer close(done)
+		resp, execErr = New(WithMaxRedirects(10)).GET(chunkedRedirector.URL).Execute()
+	}()
+
+	select {
+	case <-done:
+		if execErr != nil {
+			t.Fatalf("Execute() error = %v", execErr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("body slurp blocked: io.CopyN did not return within timeout")
+	}
+}
+
+func TestBodySlurpCopyNReadsAtMostMaxBodySlurpSize(t *testing.T) {
+	const maxBodySlurpSize = 2 << 10
+
+	largeBody := strings.Repeat("x", maxBodySlurpSize*4)
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte(largeBody))
+	}))
+	defer redirector.Close()
+
+	done := make(chan struct{})
+	var resp *http.Response
+	var execErr error
+
+	go func() {
+		defer close(done)
+		resp, execErr = New(WithMaxRedirects(10)).GET(redirector.URL).Execute()
+	}()
+
+	select {
+	case <-done:
+		if execErr != nil {
+			t.Fatalf("Execute() error = %v", execErr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("body slurp blocked on large body: io.CopyN did not return within timeout")
+	}
+}
