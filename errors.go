@@ -19,6 +19,7 @@ var (
 	ErrInvalidURL         = errors.New("httpc: invalid URL")
 	ErrInvalidSSEStream   = errors.New("httpc: invalid SSE stream")
 	ErrNoResponse         = errors.New("httpc: no response")
+	ErrUseLastResponse    = errors.New("httpc: use last response")
 )
 
 var ErrShortWrite = errors.New("short write")

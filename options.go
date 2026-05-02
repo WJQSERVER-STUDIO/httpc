@@ -90,6 +90,30 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithFollowRedirects 设置是否自动跟随重定向
+func WithFollowRedirects(follow bool) Option {
+	return func(c *Client) {
+		c.followRedirect = follow
+	}
+}
+
+// WithMaxRedirects 设置最大重定向次数
+func WithMaxRedirects(maxRedirects int) Option {
+	return func(c *Client) {
+		if maxRedirects < 0 {
+			maxRedirects = 0
+		}
+		c.maxRedirects = maxRedirects
+	}
+}
+
+// WithCheckRedirect 设置自定义重定向检查函数
+func WithCheckRedirect(fn func(req *http.Request, via []*http.Request) error) Option {
+	return func(c *Client) {
+		c.checkRedirect = fn
+	}
+}
+
 // WithDNSResolver 设置自定义DNS解析器
 // servers: 一个或多个DNS服务器地址, 格式为 "ip:port" (例如, "8.8.8.8:53")
 // timeout: DNS查询的超时时间如果为0, 将使用默认超时 (5秒)

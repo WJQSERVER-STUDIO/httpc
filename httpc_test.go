@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -253,5 +254,316 @@ func TestCalculateExponentialBackoffWithJitterStillHonorsMaxDelay(t *testing.T) 
 	got := client.calculateExponentialBackoff(3, true)
 	if got != 800*time.Millisecond {
 		t.Fatalf("backoff with jitter cap = %v, want %v", got, 800*time.Millisecond)
+	}
+}
+
+func TestRedirect301PostSwitchesToGet(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().POST(redirector.URL).SetRawBody([]byte(`{"a":1}`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodGet {
+		t.Fatalf("redirected method = %q, want GET", m)
+	}
+}
+
+func TestRedirect307PreservesMethodAndBody(t *testing.T) {
+	var gotMethod atomic.Value
+	var gotBody atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().POST(redirector.URL).SetRawBody([]byte(`payload`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodPost {
+		t.Fatalf("redirected method = %q, want POST", m)
+	}
+	if b, _ := gotBody.Load().(string); b != "payload" {
+		t.Fatalf("redirected body = %q, want payload", b)
+	}
+}
+
+func TestRedirectFollowDisabledReturns3xx(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	resp, err := New(WithFollowRedirects(false)).GET(redirector.URL).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+}
+
+func TestRedirectMaxRedirectsExceeded(t *testing.T) {
+	redirector := httptest.NewServer(nil)
+	redirector.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirector.URL)
+		w.WriteHeader(http.StatusFound)
+	})
+	defer redirector.Close()
+
+	_, err := New(WithMaxRedirects(2)).GET(redirector.URL).Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want redirect limit error")
+	}
+	if !strings.Contains(err.Error(), "stopped after 2 redirects") {
+		t.Fatalf("error = %v, want stopped after 2 redirects", err)
+	}
+}
+
+func TestRedirectStripsAuthorizationCrossDomain(t *testing.T) {
+	var authHeader atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	u, err := url.Parse(target.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "http://"+u.Host+"/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	startURL := strings.Replace(redirector.URL, "127.0.0.1", "localhost", 1)
+
+	resp, err := New().GET(startURL).SetHeader("Authorization", "Bearer token").Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got, _ := authHeader.Load().(string); got != "" {
+		t.Fatalf("Authorization = %q, want empty", got)
+	}
+}
+
+func TestRedirect303ForcesGet(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusSeeOther)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().PUT(redirector.URL).SetRawBody([]byte("abc")).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodGet {
+		t.Fatalf("redirected method = %q, want GET", m)
+	}
+}
+
+func TestRedirect308WithNonReplayableBodyReturns308(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusPermanentRedirect)
+	}))
+	defer redirector.Close()
+
+	body := io.NopCloser(strings.NewReader("stream-body"))
+	req, err := http.NewRequest(http.MethodPost, redirector.URL, body)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.GetBody = nil
+	req.ContentLength = int64(len("stream-body"))
+
+	resp, err := New().Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", resp.StatusCode)
+	}
+}
+
+func TestRedirectWithoutLocationReturnsOriginal3xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	resp, err := New().GET(server.URL).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+}
+
+func TestRedirect302PostSwitchesToGet(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().POST(redirector.URL).SetRawBody([]byte(`{"a":1}`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodGet {
+		t.Fatalf("redirected method = %q, want GET", m)
+	}
+}
+
+func TestRedirect308PreservesMethodAndBodyWhenReplayable(t *testing.T) {
+	var gotMethod atomic.Value
+	var gotBody atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusPermanentRedirect)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().POST(redirector.URL).SetRawBody([]byte("payload-308")).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodPost {
+		t.Fatalf("redirected method = %q, want POST", m)
+	}
+	if b, _ := gotBody.Load().(string); b != "payload-308" {
+		t.Fatalf("redirected body = %q, want payload-308", b)
+	}
+}
+
+func TestRedirectRelativeLocationIsResolved(t *testing.T) {
+	var finalPath atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/final")
+			w.WriteHeader(http.StatusFound)
+		case "/final":
+			finalPath.Store(r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	resp, err := New().GET(server.URL + "/start").Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if p, _ := finalPath.Load().(string); p != "/final" {
+		t.Fatalf("final path = %q, want /final", p)
+	}
+}
+
+func TestRedirect307StripsAuthorizationCrossDomain(t *testing.T) {
+	var authHeader atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader.Store(r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	u, err := url.Parse(target.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "http://"+u.Host+"/")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	startURL := strings.Replace(redirector.URL, "127.0.0.1", "localhost", 1)
+	resp, err := New().POST(startURL).SetRawBody([]byte("abc")).SetHeader("Authorization", "Bearer token").Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got, _ := authHeader.Load().(string); got != "" {
+		t.Fatalf("Authorization = %q, want empty", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,13 @@ import (
 )
 
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("httpc: nil request")
+	}
+	if req.URL == nil {
+		return nil, fmt.Errorf("httpc: nil request URL")
+	}
+
 	var finalRT http.RoundTripper = c.transport
 
 	// 逆序应用，使得第一个中间件在最外层
@@ -31,7 +39,185 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		finalRT = c.retryRoundTripper(finalRT)
 	}
 
-	return finalRT.RoundTrip(req)
+	if !c.followRedirect {
+		return finalRT.RoundTrip(req)
+	}
+
+	var (
+		reqs                  []*http.Request
+		resp                  *http.Response
+		redirectMethod        string
+		includeBody           = true
+		stripSensitiveHeaders bool
+	)
+
+	copyHeaders := makeHeadersCopier(req)
+
+	for {
+		if len(reqs) > 0 {
+			loc := resp.Header.Get("Location")
+			if loc == "" {
+				return resp, nil
+			}
+
+			nextURL, err := req.URL.Parse(loc)
+			if err != nil {
+				resp.Body.Close()
+				return nil, err
+			}
+
+			host := ""
+			if req.Host != "" && req.Host != req.URL.Host {
+				if parsedLoc, _ := url.Parse(loc); parsedLoc != nil && !parsedLoc.IsAbs() {
+					host = req.Host
+				}
+			}
+
+			ireq := reqs[0]
+			req = &http.Request{
+				Method:   redirectMethod,
+				Response: resp,
+				URL:      nextURL,
+				Header:   make(http.Header),
+				Host:     host,
+			}
+			req = req.WithContext(ireq.Context())
+
+			if includeBody && ireq.GetBody != nil {
+				newBody, err := ireq.GetBody()
+				if err != nil {
+					resp.Body.Close()
+					return nil, err
+				}
+				req.Body = newBody
+				req.GetBody = ireq.GetBody
+				req.ContentLength = ireq.ContentLength
+			}
+
+			if !stripSensitiveHeaders && reqs[0].URL.Host != req.URL.Host {
+				if !shouldCopyHeaderOnRedirect(reqs[0].URL, req.URL) {
+					stripSensitiveHeaders = true
+				}
+			}
+
+			copyHeaders(req, stripSensitiveHeaders, !includeBody)
+			if ref := refererForURL(reqs[len(reqs)-1].URL, req.URL, req.Header.Get("Referer")); ref != "" {
+				req.Header.Set("Referer", ref)
+			}
+
+			if err := c.checkRedirectPolicy(req, reqs); err != nil {
+				if err == ErrUseLastResponse {
+					return resp, nil
+				}
+				resp.Body.Close()
+				return resp, err
+			}
+
+			const maxBodySlurpSize = 2 << 10
+			if resp.ContentLength == -1 || resp.ContentLength <= maxBodySlurpSize {
+				_, _ = io.CopyN(io.Discard, resp.Body, maxBodySlurpSize)
+			}
+			resp.Body.Close()
+		}
+
+		reqs = append(reqs, req)
+		var err error
+		resp, err = finalRT.RoundTrip(req)
+		if err != nil {
+			return nil, c.wrapError(err)
+		}
+
+		var shouldRedirect, includeBodyOnHop bool
+		redirectMethod, shouldRedirect, includeBodyOnHop = redirectBehavior(req.Method, resp, reqs[0])
+		if !shouldRedirect {
+			return resp, nil
+		}
+		if !includeBodyOnHop {
+			includeBody = false
+		}
+
+		if req.Body != nil {
+			req.Body.Close()
+		}
+	}
+}
+
+func (c *Client) checkRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if c.checkRedirect != nil {
+		return c.checkRedirect(req, via)
+	}
+	if len(via) >= c.maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", c.maxRedirects)
+	}
+	return nil
+}
+
+func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request) (redirectMethod string, shouldRedirect, includeBody bool) {
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
+		redirectMethod = reqMethod
+		shouldRedirect = true
+		includeBody = false
+		if reqMethod != http.MethodGet && reqMethod != http.MethodHead {
+			redirectMethod = http.MethodGet
+		}
+	case http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		redirectMethod = reqMethod
+		shouldRedirect = true
+		includeBody = true
+		if ireq.GetBody == nil && ireq.ContentLength != 0 {
+			shouldRedirect = false
+		}
+	}
+	return redirectMethod, shouldRedirect, includeBody
+}
+
+func makeHeadersCopier(ireq *http.Request) func(req *http.Request, stripSensitiveHeaders, stripBodyHeaders bool) {
+	ireqhdr := ireq.Header.Clone()
+	return func(req *http.Request, stripSensitiveHeaders, stripBodyHeaders bool) {
+		for k, vv := range ireqhdr {
+			sensitive := false
+			body := false
+			switch http.CanonicalHeaderKey(k) {
+			case "Authorization", "Www-Authenticate", "Cookie", "Cookie2", "Proxy-Authorization", "Proxy-Authenticate":
+				sensitive = true
+			case "Content-Encoding", "Content-Language", "Content-Location", "Content-Type":
+				body = true
+			}
+			if !(sensitive && stripSensitiveHeaders) && !(body && stripBodyHeaders) {
+				req.Header[k] = vv
+			}
+		}
+	}
+}
+
+func refererForURL(lastReq, newReq *url.URL, explicitRef string) string {
+	if explicitRef != "" {
+		return explicitRef
+	}
+	if lastReq.Scheme == "https" && newReq.Scheme == "http" {
+		return ""
+	}
+	req := *lastReq
+	req.User = nil
+	return req.String()
+}
+
+func shouldCopyHeaderOnRedirect(initial, dest *url.URL) bool {
+	return isDomainOrSubdomain(dest.Hostname(), initial.Hostname())
+}
+
+func isDomainOrSubdomain(sub, parent string) bool {
+	if sub == parent {
+		return true
+	}
+	if strings.ContainsAny(sub, ":%") {
+		return false
+	}
+	if !strings.HasSuffix(sub, parent) {
+		return false
+	}
+	return len(sub) > len(parent) && sub[len(sub)-len(parent)-1] == '.'
 }
 
 // logRoundTripper 是一个内部中间件，用于在请求发送前记录日志
