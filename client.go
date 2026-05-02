@@ -36,6 +36,8 @@ func New(opts ...Option) *Client {
 			Timeout: 0, // 默认 Client Timeout 为 0，表示不超时，由 Request Context 控制
 		},
 		//transport:     transport,
+		maxRedirects:  10,
+		followRedirect: true,
 		retryOpts:     defaultRetryOptions(),
 		randomFloat64: rand.Float64,
 		bufferPool:    newDefaultPool(defaultBufferSize),

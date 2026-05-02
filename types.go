@@ -57,6 +57,9 @@ type DumpLogFunc func(ctx context.Context, log string)
 type Client struct {
 	client        *http.Client
 	transport     *http.Transport
+	checkRedirect func(req *http.Request, via []*http.Request) error
+	maxRedirects  int
+	followRedirect bool
 	retryOpts     RetryOptions
 	randomFloat64 func() float64
 	bufferPool    BufferPool
