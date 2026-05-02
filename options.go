@@ -97,7 +97,10 @@ func WithFollowRedirects(follow bool) Option {
 	}
 }
 
-// WithMaxRedirects 设置最大重定向次数
+// WithMaxRedirects 设置最大重定向次数。
+// 0 表示禁止跟随重定向（直接返回 3xx 响应），负值等同于 0。
+// 默认值为 10，与 Go 标准库一致。
+// 若同时设置了 WithCheckRedirect，自定义函数将完全接管重定向策略，此设置失效。
 func WithMaxRedirects(maxRedirects int) Option {
 	return func(c *Client) {
 		if maxRedirects < 0 {
@@ -107,7 +110,12 @@ func WithMaxRedirects(maxRedirects int) Option {
 	}
 }
 
-// WithCheckRedirect 设置自定义重定向检查函数
+// WithCheckRedirect 设置自定义重定向检查函数。
+// 设置后将完全接管重定向策略，WithMaxRedirects 的默认限制失效。
+// 用户需在函数内自行实现重定向次数限制等逻辑。
+// 返回 ErrUseLastResponse 可阻止跟随并直接返回当前 3xx 响应。
+// 返回其他 error 将中止请求并返回该错误（响应 Body 已关闭）。
+// 返回 nil 则允许继续重定向。
 func WithCheckRedirect(fn func(req *http.Request, via []*http.Request) error) Option {
 	return func(c *Client) {
 		c.checkRedirect = fn

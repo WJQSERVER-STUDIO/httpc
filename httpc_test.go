@@ -2,6 +2,8 @@ package httpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -565,5 +567,131 @@ func TestRedirect307StripsAuthorizationCrossDomain(t *testing.T) {
 
 	if got, _ := authHeader.Load().(string); got != "" {
 		t.Fatalf("Authorization = %q, want empty", got)
+	}
+}
+
+func TestRedirectMaxRedirectsZeroReturns3xx(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	resp, err := New(WithMaxRedirects(0)).GET(redirector.URL).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+}
+
+func TestRedirectMaxRedirectsNegativeReturns3xx(t *testing.T) {
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "http://example.com")
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	resp, err := New(WithMaxRedirects(-5)).GET(redirector.URL).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("status = %d, want 301", resp.StatusCode)
+	}
+}
+
+func TestRedirectCheckRedirectUseLastResponse(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	client := New(WithCheckRedirect(func(req *http.Request, via []*http.Request) error {
+		return ErrUseLastResponse
+	}))
+
+	resp, err := client.GET(redirector.URL).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+}
+
+func TestRedirectCheckRedirectCustomError(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	customErr := errors.New("custom redirect blocked")
+	client := New(WithCheckRedirect(func(req *http.Request, via []*http.Request) error {
+		return customErr
+	}))
+
+	_, err := client.GET(redirector.URL).Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want custom error")
+	}
+	if !strings.Contains(err.Error(), "custom redirect blocked") {
+		t.Fatalf("error = %v, want custom redirect blocked", err)
+	}
+}
+
+func TestRedirectCheckRedirectOverridesMaxRedirects(t *testing.T) {
+	var redirectCount atomic.Int32
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if redirectCount.Add(1) <= 5 {
+			w.Header().Set("Location", srv.URL)
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := New(
+		WithMaxRedirects(1),
+		WithCheckRedirect(func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return fmt.Errorf("custom limit reached")
+			}
+			return nil
+		}),
+	)
+
+	_, err := client.GET(srv.URL).Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want custom limit error")
+	}
+	if !strings.Contains(err.Error(), "custom limit reached") {
+		t.Fatalf("error = %v, want custom limit reached", err)
 	}
 }

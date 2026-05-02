@@ -146,8 +146,11 @@ func (c *Client) checkRedirectPolicy(req *http.Request, via []*http.Request) err
 	if c.checkRedirect != nil {
 		return c.checkRedirect(req, via)
 	}
+	if c.maxRedirects <= 0 {
+		return ErrUseLastResponse
+	}
 	if len(via) >= c.maxRedirects {
-		return fmt.Errorf("stopped after %d redirects", c.maxRedirects)
+		return fmt.Errorf("httpc: stopped after %d redirects", c.maxRedirects)
 	}
 	return nil
 }
