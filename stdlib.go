@@ -54,6 +54,41 @@ func (c *Client) PostGOB(ctx context.Context, url string, body any) (*http.Respo
 	return builder.WithContext(ctx).Execute()
 }
 
+// Query 发送 QUERY 请求
+func (c *Client) Query(ctx context.Context, url string, body io.Reader) (*http.Response, error) {
+	return c.QUERY(url).SetBody(body).WithContext(ctx).Execute()
+}
+
+// QueryJSON 发送 JSON QUERY 请求
+func (c *Client) QueryJSON(ctx context.Context, url string, body any) (*http.Response, error) {
+	builder := c.QUERY(url)
+	_, err := builder.SetJSONBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
+// QueryXML 发送 XML QUERY 请求
+func (c *Client) QueryXML(ctx context.Context, url string, body any) (*http.Response, error) {
+	builder := c.QUERY(url)
+	_, err := builder.SetXMLBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
+// QueryGOB 发送 GOB QUERY 请求
+func (c *Client) QueryGOB(ctx context.Context, url string, body any) (*http.Response, error) {
+	builder := c.QUERY(url)
+	_, err := builder.SetGOBBody(body)
+	if err != nil {
+		return nil, err
+	}
+	return builder.WithContext(ctx).Execute()
+}
+
 // PutJSON 发送 JSON PUT 请求
 func (c *Client) PutJSON(ctx context.Context, url string, body any) (*http.Response, error) {
 	builder := c.PUT(url)

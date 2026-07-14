@@ -55,6 +55,11 @@ func (c *Client) OPTIONS(urlStr string) *RequestBuilder {
 	return c.NewRequestBuilder(http.MethodOptions, urlStr)
 }
 
+// QUERY 方法用于安全且幂等的查询操作，支持请求体 (RFC 10008)
+func (c *Client) QUERY(urlStr string) *RequestBuilder {
+	return c.NewRequestBuilder("QUERY", urlStr)
+}
+
 // WithContext 设置 Context
 func (rb *RequestBuilder) WithContext(ctx context.Context) *RequestBuilder {
 	rb.context = ctx
