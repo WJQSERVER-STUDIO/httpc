@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/go-json-experiment/json"
+	"encoding/json/v2"
 )
 
 // NewRequestBuilder 创建 RequestBuilder 实例

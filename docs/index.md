@@ -24,8 +24,8 @@ httpc 是一个基于 Go 标准库 `net/http` 的增强型 HTTP 客户端库。�
 - 标准库 `http.Client` 兼容方法
 
 **依赖：**
-- `go 1.26`
-- `github.com/go-json-experiment/json` (JSON 编解码)
+- `go 1.27`
+- `encoding/json/v2` (JSON 编解码)
 - `github.com/WJQSERVER-STUDIO/go-utils/iox` (IO 工具)
 - `golang.org/x/net/proxy` (SOCKS5 代理)
 
