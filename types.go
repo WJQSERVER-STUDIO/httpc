@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// HTTP 方法常量
+const (
+	MethodQuery = "QUERY"
+)
+
 // 默认配置常量
 const (
 	defaultBufferSize            = 32 << 10 // 32KB
