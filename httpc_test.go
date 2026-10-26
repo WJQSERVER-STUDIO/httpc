@@ -806,3 +806,138 @@ func TestBodySlurpCopyNReadsAtMostMaxBodySlurpSize(t *testing.T) {
 		t.Fatal("body slurp blocked on large body: io.CopyN did not return within timeout")
 	}
 }
+
+func TestQueryRedirect301PreservesMethod(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusMovedPermanently)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().QUERY(redirector.URL).SetRawBody([]byte(`{"q":"foo"}`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != MethodQuery {
+		t.Fatalf("redirected method = %q, want %q", m, MethodQuery)
+	}
+}
+
+func TestQueryRedirect302PreservesMethod(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().QUERY(redirector.URL).SetRawBody([]byte(`{"q":"foo"}`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != MethodQuery {
+		t.Fatalf("redirected method = %q, want %q", m, MethodQuery)
+	}
+}
+
+func TestQueryRedirect303SwitchesToGet(t *testing.T) {
+	var gotMethod atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusSeeOther)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().QUERY(redirector.URL).SetRawBody([]byte(`{"q":"foo"}`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != http.MethodGet {
+		t.Fatalf("redirected method = %q, want %q", m, http.MethodGet)
+	}
+}
+
+func TestQueryRedirect307PreservesMethodAndBody(t *testing.T) {
+	var gotMethod atomic.Value
+	var gotBody atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().QUERY(redirector.URL).SetRawBody([]byte(`payload-query`)).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != MethodQuery {
+		t.Fatalf("redirected method = %q, want %q", m, MethodQuery)
+	}
+	if b, _ := gotBody.Load().(string); b != "payload-query" {
+		t.Fatalf("redirected body = %q, want %q", b, "payload-query")
+	}
+}
+
+func TestQueryRedirect308PreservesMethodAndBody(t *testing.T) {
+	var gotMethod atomic.Value
+	var gotBody atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod.Store(r.Method)
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusPermanentRedirect)
+	}))
+	defer redirector.Close()
+
+	resp, err := New().QUERY(redirector.URL).SetRawBody([]byte("payload-query-308")).Execute()
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if m, _ := gotMethod.Load().(string); m != MethodQuery {
+		t.Fatalf("redirected method = %q, want %q", m, MethodQuery)
+	}
+	if b, _ := gotBody.Load().(string); b != "payload-query-308" {
+		t.Fatalf("redirected body = %q, want %q", b, "payload-query-308")
+	}
+}

@@ -157,13 +157,19 @@ func (c *Client) checkRedirectPolicy(req *http.Request, via []*http.Request) err
 
 func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request) (redirectMethod string, shouldRedirect, includeBody bool) {
 	switch resp.StatusCode {
-	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
+	case http.StatusMovedPermanently, http.StatusFound:
+		// RFC 10008 Section 2.5: QUERY 在 301/302 时保持方法，不转为 GET
+		// POST 等非安全方法仍按标准行为转为 GET
 		redirectMethod = reqMethod
 		shouldRedirect = true
 		includeBody = false
-		if reqMethod != http.MethodGet && reqMethod != http.MethodHead {
+		if reqMethod != MethodQuery && reqMethod != http.MethodGet && reqMethod != http.MethodHead {
 			redirectMethod = http.MethodGet
 		}
+	case http.StatusSeeOther:
+		redirectMethod = http.MethodGet
+		shouldRedirect = true
+		includeBody = false
 	case http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 		redirectMethod = reqMethod
 		shouldRedirect = true
