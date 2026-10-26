@@ -158,16 +158,29 @@ func (c *Client) checkRedirectPolicy(req *http.Request, via []*http.Request) err
 func redirectBehavior(reqMethod string, resp *http.Response, ireq *http.Request) (redirectMethod string, shouldRedirect, includeBody bool) {
 	switch resp.StatusCode {
 	case http.StatusMovedPermanently, http.StatusFound:
-		// RFC 10008 Section 2.5: QUERY 在 301/302 时保持方法，不转为 GET
-		// POST 等非安全方法仍按标准行为转为 GET
+		// RFC 10008 Section 2.5: QUERY 在 301/302 时保持方法并重放请求体，
+		// 发送类似的 QUERY 请求到新目标；GET/HEAD 保持方法不带 body；
+		// POST 等非安全方法按标准行为转为 GET。
 		redirectMethod = reqMethod
 		shouldRedirect = true
 		includeBody = false
-		if reqMethod != MethodQuery && reqMethod != http.MethodGet && reqMethod != http.MethodHead {
+		if reqMethod == MethodQuery {
+			includeBody = true
+			// 若请求体无法重放且有内容，则不发送缺失请求体的重定向请求
+			if ireq.GetBody == nil && ireq.ContentLength != 0 {
+				shouldRedirect = false
+			}
+		} else if reqMethod != http.MethodGet && reqMethod != http.MethodHead {
 			redirectMethod = http.MethodGet
 		}
 	case http.StatusSeeOther:
-		redirectMethod = http.MethodGet
+		// RFC 10008 Section 2.5: QUERY 在 303 时转为 GET；
+		// HEAD 保持方法（RFC 9110 / Go 标准库行为）。
+		if reqMethod == http.MethodHead {
+			redirectMethod = http.MethodHead
+		} else {
+			redirectMethod = http.MethodGet
+		}
 		shouldRedirect = true
 		includeBody = false
 	case http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
