@@ -73,6 +73,26 @@ func (rb *RequestBuilder) Bytes() ([]byte, error) {
 	return rb.client.decodeBytesResponse(resp)
 }
 
+// StreamText 流式读取文本响应体，通过回调逐片处理，避免一次性将整个响应体读入内存。
+// 响应体会在回调返回后自动关闭；状态码 >= 400 时返回 *HTTPError。
+func (rb *RequestBuilder) StreamText(fn func(io.Reader) error) error {
+	resp, err := rb.Execute()
+	if err != nil {
+		return err
+	}
+	return rb.client.StreamText(resp, fn)
+}
+
+// StreamBytes 流式读取字节响应体，通过回调逐片处理，避免一次性将整个响应体读入内存。
+// 响应体会在回调返回后自动关闭；状态码 >= 400 时返回 *HTTPError。
+func (rb *RequestBuilder) StreamBytes(fn func(io.Reader) error) error {
+	resp, err := rb.Execute()
+	if err != nil {
+		return err
+	}
+	return rb.client.StreamBytes(resp, fn)
+}
+
 // decodeJSONResponse 内部 JSON 响应解码
 func (c *Client) decodeJSONResponse(resp *http.Response, obj any) error {
 	if resp.StatusCode >= 400 {
@@ -138,4 +158,30 @@ func (c *Client) decodeBytesResponse(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", err, ErrDecodeResponse)
 	}
 	return bodyBytes, nil
+}
+
+// StreamText 流式读取文本响应体，通过回调逐片处理，避免一次性将整个响应体读入内存。
+// 响应体会在回调返回后自动关闭；状态码 >= 400 时返回 *HTTPError。
+func (c *Client) StreamText(resp *http.Response, fn func(io.Reader) error) error {
+	if resp == nil {
+		return ErrNoResponse
+	}
+	if resp.StatusCode >= 400 {
+		return c.errorResponse(resp)
+	}
+	defer resp.Body.Close()
+	return fn(resp.Body)
+}
+
+// StreamBytes 流式读取字节响应体，通过回调逐片处理，避免一次性将整个响应体读入内存。
+// 响应体会在回调返回后自动关闭；状态码 >= 400 时返回 *HTTPError。
+func (c *Client) StreamBytes(resp *http.Response, fn func(io.Reader) error) error {
+	if resp == nil {
+		return ErrNoResponse
+	}
+	if resp.StatusCode >= 400 {
+		return c.errorResponse(resp)
+	}
+	defer resp.Body.Close()
+	return fn(resp.Body)
 }

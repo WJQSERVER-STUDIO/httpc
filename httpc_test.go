@@ -1026,3 +1026,137 @@ func TestHeadRedirect303PreservesHeadMethod(t *testing.T) {
 		t.Fatalf("redirected method = %q, want %q", m, http.MethodHead)
 	}
 }
+
+func TestStreamTextReadsChunks(t *testing.T) {
+	const bodyText = "streaming-text-response"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(bodyText))
+	}))
+	defer server.Close()
+
+	var sb strings.Builder
+	err := New().GET(server.URL).StreamText(func(r io.Reader) error {
+		buf := make([]byte, 4)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				sb.Write(buf[:n])
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if got := sb.String(); got != bodyText {
+		t.Fatalf("streamed text = %q, want %q", got, bodyText)
+	}
+}
+
+func TestStreamBytesReadsChunks(t *testing.T) {
+	bodyBytes := []byte("streaming-bytes-response")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bodyBytes)
+	}))
+	defer server.Close()
+
+	var got []byte
+	err := New().GET(server.URL).StreamBytes(func(r io.Reader) error {
+		buf := make([]byte, 4)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				got = append(got, buf[:n]...)
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamBytes() error = %v", err)
+	}
+	if string(got) != string(bodyBytes) {
+		t.Fatalf("streamed bytes = %q, want %q", string(got), string(bodyBytes))
+	}
+}
+
+func TestStreamTextErrorStatusReturnsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("error body"))
+	}))
+	defer server.Close()
+
+	err := New().GET(server.URL).StreamText(func(r io.Reader) error {
+		return nil
+	})
+	if err == nil {
+		t.Fatal("StreamText() error = nil, want *HTTPError")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error type = %T, want *HTTPError", err)
+	}
+	if httpErr.StatusCode != http.StatusTeapot {
+		t.Fatalf("StatusCode = %d, want %d", httpErr.StatusCode, http.StatusTeapot)
+	}
+}
+
+func TestStreamCallbackErrorPropagates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("some body"))
+	}))
+	defer server.Close()
+
+	customErr := errors.New("callback failed")
+	err := New().GET(server.URL).StreamBytes(func(r io.Reader) error {
+		_, _ = io.ReadAll(r)
+		return customErr
+	})
+	if err == nil {
+		t.Fatal("StreamBytes() error = nil, want callback error")
+	}
+	if err.Error() != customErr.Error() {
+		t.Fatalf("error = %v, want %v", err, customErr)
+	}
+}
+
+func TestStreamReadsEntireBodyWithoutLoss(t *testing.T) {
+	bodyText := strings.Repeat("abcdefgh", 256) // 2KB body
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(bodyText))
+	}))
+	defer server.Close()
+
+	var got strings.Builder
+	err := New().GET(server.URL).StreamText(func(r io.Reader) error {
+		_, err := io.Copy(&got, r)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if got.String() != bodyText {
+		t.Fatalf("streamed body length = %d, want %d", got.Len(), len(bodyText))
+	}
+}
+
+// closingBody 包装 io.ReadCloser 并在 Close 时记录。
+type closingBody struct {
+	io.ReadCloser
+	closed *atomic.Bool
+}
+
+func (b *closingBody) Close() error {
+	b.closed.Store(true)
+	return b.ReadCloser.Close()
+}
