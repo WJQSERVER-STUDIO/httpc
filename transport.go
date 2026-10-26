@@ -410,7 +410,13 @@ func getTransportDetails(transport http.RoundTripper, sb *strings.Builder) {
 		sb.WriteString(strconv.Itoa(t.ReadBufferSize))
 		sb.WriteByte('\n')
 		sb.WriteString("  Protocol             : ")
-		fmt.Fprintf(sb, "%v\n", t.Protocols) // 协议部分结构复杂, 暂时保留 Fprintf
+		sb.WriteString("HTTP1=")
+		sb.WriteString(strconv.FormatBool(t.Protocols.HTTP1()))
+		sb.WriteString(" HTTP2=")
+		sb.WriteString(strconv.FormatBool(t.Protocols.HTTP2()))
+		sb.WriteString(" H2C=")
+		sb.WriteString(strconv.FormatBool(t.Protocols.UnencryptedHTTP2()))
+		sb.WriteByte('\n')
 		return
 	}
 
